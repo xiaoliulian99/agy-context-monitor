@@ -1,0 +1,17 @@
+{
+  "name": "agy-context-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lightweight Antigravity 2.11.0 context-window companion (CLI POC)",
+  "bin": {
+    "agy-context": "src/main.js"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "watch": "node src/main.js --watch",
+    "test": "node tests/context.test.js",
+    "inject": "node injector/install.js",
+    "uninject": "node injector/install.js --uninstall",
+    "inject-check": "node injector/install.js --check"
+  }
+}

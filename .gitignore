@@ -1,0 +1,11 @@
+node_modules/
+.codegraph/
+*.asar
+*.asar.bak
+*.agy-context.bak
+*.agy-new
+.status.json
+.status.json.tmp
+monitor.pid
+.DS_Store
+Thumbs.db
