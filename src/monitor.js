@@ -4,7 +4,7 @@ const {
   discoverLanguageServer,
 } = require('./antigravity/discovery');
 const { rpcCall, metaBody } = require('./antigravity/rpc');
-const { getAllTrajectories, selectCurrentSession, getTrajectorySteps } = require('./antigravity/session');
+const { getAllTrajectories, getLastSelectedCascadeId, selectCurrentSession, getTrajectorySteps } = require('./antigravity/session');
 const { computeContext, limitsFromAvailableModels, labelsFromUserStatus, COMPRESSION_MIN_DROP } = require('./context/calculator');
 
 const BASE_INTERVAL_MS = 5000;
@@ -177,15 +177,19 @@ class Monitor {
     }
 
     let trajectories;
+    let selectedCascadeId = '';
     try {
-      trajectories = await getAllTrajectories(ls);
+      [trajectories, selectedCascadeId] = await Promise.all([
+        getAllTrajectories(ls),
+        getLastSelectedCascadeId(ls),
+      ]);
       await this.refreshModelMeta();
     } catch (err) {
       this.invalidateLs();
       throw err;
     }
 
-    const session = selectCurrentSession(trajectories, this.trackedCascadeId);
+    const session = selectCurrentSession(trajectories, this.trackedCascadeId, selectedCascadeId);
     if (!session) {
       this.trackedCascadeId = null;
       this.resetSessionMemory();

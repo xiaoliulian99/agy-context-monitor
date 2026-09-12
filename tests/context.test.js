@@ -1,5 +1,6 @@
 const { detectCompression, computeContext, COMPRESSION_MIN_DROP } = require('../src/context/calculator');
 const { Monitor } = require('../src/monitor');
+const { RUNNING, pickSelectedCascadeId, selectCurrentSession } = require('../src/antigravity/session');
 
 function usage(input, cache) {
   return { inputTokens: String(input), outputTokens: '10', cacheReadTokens: String(cache) };
@@ -67,6 +68,30 @@ const cross = mon2.applyEventFlags({ ...session, stepCount: 41 }, {
 }, false);
 assert(cross.compressionDetected, 'cross-poll compression when stepCount did not drop');
 assert(cross.compressionDrop === 40000, `cross-poll drop 40000 got ${cross.compressionDrop}`);
+
+assert(pickSelectedCascadeId({
+  userSettings: { lastSelectedCascadeId: 'abc' },
+}) === 'abc', 'pick lastSelectedCascadeId from userSettings');
+assert(pickSelectedCascadeId({
+  user_settings: { last_selected_cascade_id: ' def ' },
+}) === 'def', 'pick last_selected_cascade_id and trim');
+assert(pickSelectedCascadeId({}) === '', 'empty settings has no selected id');
+
+function traj(id, extra) {
+  return { cascadeId: id, lastModifiedTime: '2026-01-01T00:00:00Z', status: 'idle', ...extra };
+}
+
+const a = traj('a', { lastModifiedTime: '2026-01-01T00:00:00Z' });
+const b = traj('b', { lastModifiedTime: '2026-01-02T00:00:00Z' });
+const runningA = traj('a', { status: RUNNING, lastModifiedTime: '2026-01-03T00:00:00Z' });
+const olderB = traj('b', { lastModifiedTime: '2025-12-01T00:00:00Z' });
+
+assert(selectCurrentSession([a, olderB], 'a', 'b').cascadeId === 'b', 'selected idle session wins immediately');
+assert(selectCurrentSession([runningA, olderB], 'a', 'b').cascadeId === 'b', 'selected session wins over running tracked');
+assert(selectCurrentSession([a, b], 'a', 'missing').cascadeId === 'b', 'unknown selected falls back to newer modified');
+assert(selectCurrentSession([a, olderB], 'a', '').cascadeId === 'a', 'tracked sticks when selected missing and newer is older');
+assert(selectCurrentSession([runningA, b], 'a', '').cascadeId === 'a', 'running tracked kept without selected id');
+assert(selectCurrentSession([a, b], null, '').cascadeId === 'b', 'newest used when nothing tracked');
 
 if (failed) {
   process.exit(1);

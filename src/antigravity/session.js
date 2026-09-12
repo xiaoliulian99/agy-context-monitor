@@ -39,8 +39,28 @@ function parseTrajectories(resp) {
   return result;
 }
 
-function selectCurrentSession(trajectories, trackedCascadeId) {
+function pickSelectedCascadeId(resp) {
+  if (!resp || typeof resp !== 'object') return '';
+  const settings = resp.userSettings || resp.user_settings || {};
+  const id = settings.lastSelectedCascadeId || settings.last_selected_cascade_id || '';
+  return typeof id === 'string' ? id.trim() : '';
+}
+
+async function getLastSelectedCascadeId(ls) {
+  try {
+    const resp = await rpcCall(ls, 'GetUserSettings', metaBody(), 10000);
+    return pickSelectedCascadeId(resp);
+  } catch {
+    return '';
+  }
+}
+
+function selectCurrentSession(trajectories, trackedCascadeId, selectedCascadeId) {
   if (!trajectories.length) return null;
+  if (selectedCascadeId) {
+    const selected = trajectories.find((t) => t.cascadeId === selectedCascadeId);
+    if (selected) return selected;
+  }
   const running = trajectories
     .filter((t) => t.status === RUNNING)
     .sort((a, b) => String(b.lastModifiedTime).localeCompare(String(a.lastModifiedTime)));
@@ -100,6 +120,8 @@ async function getTrajectorySteps(ls, cascadeId, stepCount) {
 module.exports = {
   RUNNING,
   parseTrajectories,
+  pickSelectedCascadeId,
+  getLastSelectedCascadeId,
   selectCurrentSession,
   getAllTrajectories,
   getTrajectorySteps,
