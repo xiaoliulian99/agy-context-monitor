@@ -427,6 +427,19 @@
         return;
       }
       var d = st.data;
+      if (d.state && d.state !== 'live') {
+        prog.setAttribute('stroke', C_OFF);
+        prog.setAttribute('stroke-dashoffset', String(CIRC));
+        var tw = document.createElement('div');
+        tw.className = 't-title';
+        tw.textContent = '\u80cc\u666f\u4fe1\u606f\u7a97\u53e3\uff1a';
+        tip.appendChild(tw);
+        var waitMsg = '\u7b49\u5f85\u8bed\u8a00\u670d\u52a1\u5668';
+        if (d.state === 'waiting-ag' || d.state === 'no-install') waitMsg = '\u7b49\u5f85 Antigravity';
+        else if (d.state === 'no-session') waitMsg = '\u6682\u65e0\u4f1a\u8bdd';
+        tip.appendChild(textLine(waitMsg, false));
+        return;
+      }
       var pct = Number(d.usagePercent);
       if (!isFinite(pct) && isFinite(Number(d.contextUsed)) && isFinite(Number(d.contextLimit)) && Number(d.contextLimit) > 0) {
         pct = (Number(d.contextUsed) / Number(d.contextLimit)) * 100;

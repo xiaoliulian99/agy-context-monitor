@@ -2,6 +2,8 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const { rpcCall } = require('./rpc');
 
 const execFileAsync = promisify(execFile);
@@ -43,7 +45,58 @@ function extractWindowsPid(line) {
 
 function isLsCommandLine(commandLine) {
   const low = String(commandLine || '').toLowerCase();
+  if (low.includes('language_server.exe')) return true;
   return low.includes('language_server') && low.includes('antigravity');
+}
+
+function parseAppConfig(html) {
+  const m = String(html || '').match(/window\.__APP_CONFIG__\s*=\s*(\{[^<]*\})/);
+  if (!m) return null;
+  try {
+    const cfg = JSON.parse(m[1]);
+    return cfg && typeof cfg === 'object' ? cfg : null;
+  } catch {
+    return null;
+  }
+}
+
+function fetchText(port, useTls, pathname, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const transport = useTls ? https : http;
+    const req = transport.request({
+      hostname: '127.0.0.1',
+      port,
+      path: pathname,
+      method: 'GET',
+      timeout: timeoutMs,
+      rejectUnauthorized: false,
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => {
+        if (chunks.reduce((n, c) => n + c.length, 0) > 1024 * 1024) {
+          req.destroy();
+          reject(new Error('response too large'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('timeout'));
+    });
+    req.end();
+  });
+}
+
+async function readAppConfig(port, useTls) {
+  try {
+    return parseAppConfig(await fetchText(port, useTls, '/'));
+  } catch {
+    return null;
+  }
 }
 
 function isLoopbackReachableHost(host) {
@@ -79,16 +132,16 @@ async function listLanguageServerProcesses() {
     "Get-CimInstance Win32_Process -Filter \"Name like 'language_server%'\" | Select-Object ProcessId, Name, CommandLine | ConvertTo-Csv -NoTypeInformation",
   ], { encoding: 'utf-8', timeout: 10000, windowsHide: true });
 
-  const lines = String(result.stdout || '').split(/\r?\n/).filter((l) => isLsCommandLine(l));
-  const out = [];
-  for (const line of lines) {
-    const pid = extractWindowsPid(line);
-    const csrfToken = extractCsrfToken(line);
-    if (pid && csrfToken) {
-      out.push({ pid, csrfToken, commandLine: line });
+    const lines = String(result.stdout || '').split(/\r?\n/).filter((l) => isLsCommandLine(l));
+    const out = [];
+    for (const line of lines) {
+      const pid = extractWindowsPid(line);
+      const csrfToken = extractCsrfToken(line);
+      if (pid) {
+        out.push({ pid, csrfToken, commandLine: line });
+      }
     }
-  }
-  return out;
+    return out;
 }
 
 async function findListeningPorts(pid) {
@@ -153,14 +206,24 @@ async function isAntigravityRunning() {
 async function discoverLanguageServer() {
   const processes = await listLanguageServerProcesses();
   if (processes.length === 0) return null;
-  const target = processes[0];
-  const ports = await findListeningPorts(target.pid);
-  for (const port of ports) {
-    if (await probePort(port, target.csrfToken, true)) {
-      return { pid: target.pid, csrfToken: target.csrfToken, port, useTls: true };
-    }
-    if (await probePort(port, target.csrfToken, false)) {
-      return { pid: target.pid, csrfToken: target.csrfToken, port, useTls: false };
+  for (const target of processes) {
+    const ports = await findListeningPorts(target.pid);
+    for (const port of ports) {
+      for (const useTls of [true, false]) {
+        const cfg = await readAppConfig(port, useTls);
+        if (cfg && cfg.productName && String(cfg.productName).toLowerCase() !== 'antigravity') continue;
+        const csrfToken = (cfg && cfg.csrfToken) || target.csrfToken;
+        if (!csrfToken) continue;
+        if (await probePort(port, csrfToken, useTls)) {
+          return {
+            pid: target.pid,
+            csrfToken,
+            port,
+            useTls,
+            appVersion: cfg && cfg.appVersion,
+          };
+        }
+      }
     }
   }
   return null;
@@ -171,5 +234,7 @@ module.exports = {
   isAntigravityRunning,
   discoverLanguageServer,
   extractCsrfToken,
+  extractWindowsPid,
   isLsCommandLine,
+  parseAppConfig,
 };

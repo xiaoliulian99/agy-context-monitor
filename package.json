@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/main.js",
     "watch": "node src/main.js --watch",
-    "test": "node tests/context.test.js",
+    "test": "node tests/context.test.js && node tests/discovery.test.js",
     "inject": "node injector/install.js",
     "uninject": "node injector/install.js --uninstall",
     "inject-check": "node injector/install.js --check"
