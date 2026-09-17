@@ -178,9 +178,20 @@ async function probePort(port, csrfToken, useTls) {
 
 function findAntigravityInstallDir() {
   const candidates = [];
+  const seen = new Set();
+  const add = (dir) => {
+    if (!dir) return;
+    const resolved = path.resolve(dir);
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(resolved);
+  };
+  add(process.env.ANTIGRAVITY_INSTALL_DIR);
+  add(process.env.ANTIGRAVITY_HOME);
   const local = process.env.LOCALAPPDATA;
-  if (local) candidates.push(path.join(local, 'Programs', 'antigravity'));
-  candidates.push('C:\\Program Files\\Antigravity');
+  if (local) add(path.join(local, 'Programs', 'antigravity'));
+  add('C:\\Program Files\\Antigravity');
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, 'Antigravity.exe'))
       && fs.existsSync(path.join(dir, 'resources', 'app.asar'))) {
