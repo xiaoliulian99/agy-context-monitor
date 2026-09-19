@@ -2,7 +2,7 @@
   "name": "agy-context-monitor",
   "version": "0.1.0",
   "private": true,
-  "description": "Lightweight Antigravity 2.14.0 context-window companion (CLI POC)",
+  "description": "Lightweight Antigravity 2.15.0 context-window companion (CLI POC)",
   "bin": {
     "agy-context": "src/main.js"
   },

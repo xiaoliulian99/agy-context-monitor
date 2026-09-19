@@ -1,6 +1,6 @@
 # Antigravity Context Monitor
 
-给 **Antigravity Desktop 2.14.0（Windows）** 用的轻量 Context 圆环。
+给 **Antigravity Desktop 2.15.0（Windows）** 用的轻量 Context 圆环。
 
 装好后，正常打开 Antigravity，输入框麦克风**左边**会出现一个很细的圆环。鼠标悬停就能看到当前会话的 Context 占用，例如「45% 已用（剩余 55%）」。
 
@@ -58,7 +58,7 @@
 请逐项确认：
 
 1. **Windows 电脑**（Win10 / Win11 都可以）
-2. **已经安装** Antigravity Desktop 2.14.0
+2. **已经安装** Antigravity Desktop 2.15.0
 3. **已经安装** Node.js LTS，并且能在终端里用
 4. **能上网访问 npm**（第一次注入会执行 `npx @electron/asar`，用来解包 / 打包 `app.asar`）
 5. 建议安装 **Git**（没有 Git 也可以下载 ZIP，见第 4 节）
@@ -171,7 +171,7 @@ taskkill /f /im Antigravity.exe /t
 
 ## 6. 执行注入（真正安装圆环）
 
-确认当前目录已经是仓库根目录（能看到 `injector` 文件夹），然后**双击 `双击注入圆环.bat`**（和汉化包一样，官方更新后再双击一次即可）。
+确认当前目录已经是仓库根目录（能看到 `injector` 文件夹），然后**双击 `双击注入圆环.bat`**（和汉化包一样，官方更新后再双击一次即可）。窗口会停住直到你按键；失败时看同目录的 `inject.log`。
 
 也可以在命令行运行：
 
@@ -185,14 +185,14 @@ node injector/install.js
 2. 强制结束 `Antigravity.exe`
 3. 把 `resources\app.asar` 复制一份备份：`resources\app.asar.agy-context.bak`（**不会**动汉化用的 `app.asar.bak`）
 4. 用 `npx -y @electron/asar` 解包、写入 HUD / 启动器、再打包回去
-5. 若注入前软件是开着的，完成后会自动再打开
+5. 注入完成后会自动再打开 Antigravity，并拉起监控进程
 
 官方更新后 `app.asar` 会被换掉。脚本发现当前包里没有圆环时，会**刷新** `app.asar.agy-context.bak`，再注入。
 
 成功时终端大致会看到：
 
 ```
-[探测] Antigravity C:\Users\<你>\AppData\Local\Programs\antigravity (2.14.0)
+[探测] Antigravity C:\Users\<你>\AppData\Local\Programs\antigravity (2.15.0)
 [1] 正在关闭 Antigravity 以解锁 app.asar...
 [备份] 已创建 app.asar.agy-context.bak
 [√] 已注入 HUD 到 dist/preload.js
@@ -212,7 +212,7 @@ node injector/install.js --check
 
 ```
 installDir C:\Users\<你>\AppData\Local\Programs\antigravity
-version 2.14.0
+version 2.15.0
 hud present
 bootstrap present
 ```
@@ -259,14 +259,14 @@ bootstrap present
 - 红色：接近上限，该考虑新开对话 / 压缩了
 - 灰色：监控暂时没连上，先等几秒
 
-不需要在 Antigravity 里选端口，也不用选 Session。它会自己跟当前会话走。
+不需要在 Antigravity 里选端口，也不用选 Session。它会自己跟当前会话走；切换会话后圆环会马上跟上。
 
 ---
 
 ## 9. 请务必记住的几件事
 
 1. **不要移动或删除克隆 / 解压目录。** 搬家、改名后，必须在新位置重新双击 `双击注入圆环.bat`。
-2. 安装脚本会自动结束 `Antigravity.exe`，以便改 `app.asar`。若注入前软件开着，完成后会自动再打开。
+2. 安装脚本会自动结束 `Antigravity.exe`，以便改 `app.asar`。完成后会自动再打开。
 3. 本工具自己的备份是 `resources\app.asar.agy-context.bak`，**不会**覆盖汉化用的 `app.asar.bak`。官方更新后脚本会自动刷新这份备份。
 4. Antigravity **官方更新**会换掉 `app.asar`，圆环会消失。更新后再双击一次 `双击注入圆环.bat` 即可。
 5. 可以和中文汉化一起用。注入是往 `preload.js` / `main.js` 里增量写入，不会用官方英文包覆盖汉化。建议先汉化，再注入圆环。
@@ -345,6 +345,10 @@ npm test
 ```bat
 node injector/install.js --install-dir "D:\Apps\antigravity"
 ```
+
+### 双击 bat 窗口一闪而过 / 看起来没注入
+
+窗口应停住等你按键。若一闪而过或失败，打开仓库里的 `inject.log` 看最后几行。常见原因：没装 Node.js、`app.asar` 被占用、第一次 `npx @electron/asar` 没网。
 
 ### 提示 `node.exe not found`
 
@@ -460,7 +464,7 @@ node src/main.js --watch
     → 用安装时记下的 node.exe 启动 本仓库\src\main.js --watch
     → 监控进程询问本机 Language Server，算出 Context
     → 写入 %LOCALAPPDATA%\agy-context-monitor\status.json
-    → 输入框左侧 HUD（写在 dist/preload.js 里）每秒读一次这个文件
+    → 输入框左侧 HUD（写在 dist/preload.js 里）读这个文件；切会话时会立刻重算
 ```
 
 所以：
@@ -477,4 +481,4 @@ node src/main.js --watch
 - 第一次注入会留下独立备份：`resources\app.asar.agy-context.bak`。
 - 监控只连接本机 Language Server（`127.0.0.1`），不往外发你的对话内容。
 - 卸载命令只移除本工具写入的两段代码，不恢复整个 asar，因此汉化会保留。
-- 这是非官方配套小工具，Antigravity 大版本更新后可能要重新注入；当前针对 **Desktop 2.14.0**。
+- 这是非官方配套小工具，Antigravity 大版本更新后可能要重新注入；当前针对 **Desktop 2.15.0**。
