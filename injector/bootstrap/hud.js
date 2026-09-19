@@ -6,7 +6,7 @@
   window.__agyCtxHudInstalled = true;
 
   var HOST_ID = 'agy-ctx-hud-host';
-  var POLL_MS = 1000;
+  var POLL_MS = 400;
   var DOCK_MS = 1500;
   var OFFLINE_AFTER_MS = 20000;
   var RING_PX = 16;
@@ -49,6 +49,144 @@
     } catch (e) { return null; }
   }
   var STATUS_FILE = statusPath();
+  var ACTIVE_FILE = STATUS_FILE ? String(STATUS_FILE).replace(/status\.json$/i, 'active-cascade.json') : null;
+  var CASCADE_ID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  var CASCADE_ID_FIND = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
+  var lastCascadeId = '';
+  var lastCascadeWriteAt = 0;
+
+  function isCascadeId(value) {
+    return typeof value === 'string' && CASCADE_ID_RE.test(value.trim());
+  }
+
+  function extractCascadeId(text) {
+    var named = String(text || '').match(/"(?:cascadeId|cascade_id|conversationId|conversation_id)"\s*:\s*"([0-9a-fA-F-]{36})"/);
+    if (named && isCascadeId(named[1])) { return named[1]; }
+    return '';
+  }
+
+  function isCurrentCascadeRpc(url) {
+    var u = String(url || '');
+    if (/GetAllCascadeTrajectories/i.test(u)) { return false; }
+    return /GetCascadeTrajectory|GetCascadeTrajectorySteps|GetConversationMetadata|LoadTrajectory|SendUserCascadeMessage|SmartFocusConversation|RecordChatPanelSession|StreamCascade|InitializeCascadePanelState|GetUserTrajectory|WaitForConversationFullyIdle/i.test(u);
+  }
+
+  function writeActiveCascade(id, source) {
+    if (!isCascadeId(id)) { return; }
+    var payload = JSON.stringify({
+      cascadeId: id,
+      updatedAt: new Date().toISOString(),
+      source: source || 'hud'
+    });
+    if (ipcRenderer && typeof ipcRenderer.sendSync === 'function') {
+      try {
+        if (ipcRenderer.sendSync('agy-ctx-write-active', payload)) { return; }
+      } catch (e) {}
+    }
+    if (fsNode && ACTIVE_FILE) {
+      try { fsNode.writeFileSync(ACTIVE_FILE, payload, 'utf8'); } catch (e) {}
+    }
+  }
+
+  function rememberCascadeId(id, source) {
+    if (!isCascadeId(id)) { return; }
+    var now = Date.now();
+    if (id === lastCascadeId && (now - lastCascadeWriteAt) < 800) { return; }
+    lastCascadeId = id;
+    lastCascadeWriteAt = now;
+    writeActiveCascade(id, source);
+  }
+
+  function captureFromUrlAndBody(url, body, source) {
+    if (url && !isCurrentCascadeRpc(url) && /LanguageServerService/i.test(String(url))) { return; }
+    if (url && isCurrentCascadeRpc(url)) {
+      rememberCascadeId(extractCascadeId(body), source);
+      rememberCascadeId(extractCascadeId(url), source);
+      return;
+    }
+    if (!url) { rememberCascadeId(extractCascadeId(body), source); }
+  }
+
+  function installCascadeHooks() {
+    try {
+      if (typeof window.fetch === 'function' && !window.fetch.__agyCtxWrapped) {
+        var origFetch = window.fetch;
+        window.fetch = function () {
+          try {
+            var input = arguments[0];
+            var init = arguments[1] || {};
+            var url = typeof input === 'string' ? input : (input && input.url) || '';
+            var body = init.body || (input && typeof input.text === 'function' ? '' : '') || '';
+            if (typeof body !== 'string' && body) {
+              try { body = String(body); } catch (e2) { body = ''; }
+            }
+            captureFromUrlAndBody(url, body, 'fetch');
+          } catch (e) {}
+          return origFetch.apply(this, arguments);
+        };
+        window.fetch.__agyCtxWrapped = true;
+      }
+    } catch (e) {}
+
+    try {
+      if (typeof XMLHttpRequest !== 'undefined' && !XMLHttpRequest.prototype.__agyCtxWrapped) {
+        var origOpen = XMLHttpRequest.prototype.open;
+        var origSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function (method, url) {
+          this.__agyCtxUrl = url;
+          return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function (body) {
+          try { captureFromUrlAndBody(this.__agyCtxUrl, body, 'xhr'); } catch (e) {}
+          return origSend.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.__agyCtxWrapped = true;
+      }
+    } catch (e) {}
+
+    try {
+      if (typeof WebSocket !== 'undefined' && WebSocket.prototype && !WebSocket.prototype.__agyCtxWrapped) {
+        var origWsSend = WebSocket.prototype.send;
+        WebSocket.prototype.send = function (data) {
+          try { rememberCascadeId(extractCascadeId(data), 'ws'); } catch (e) {}
+          return origWsSend.apply(this, arguments);
+        };
+        WebSocket.prototype.__agyCtxWrapped = true;
+      }
+    } catch (e) {}
+
+    function scanLocation() {
+      try {
+        rememberCascadeId(extractCascadeId(String(window.location && window.location.href)), 'url');
+      } catch (e) {}
+    }
+    scanLocation();
+    try { window.addEventListener('popstate', scanLocation); } catch (e) {}
+    try {
+      var origPush = history.pushState;
+      history.pushState = function () {
+        var ret = origPush.apply(this, arguments);
+        scanLocation();
+        return ret;
+      };
+    } catch (e) {}
+  }
+
+  function scanDomCascade() {
+    try {
+      var nodes = document.querySelectorAll('[data-cascade-id], [data-conversation-id], [aria-selected="true"], [data-state="active"]');
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var raw = (el.getAttribute('data-cascade-id') || '')
+          + ' ' + (el.getAttribute('data-conversation-id') || '')
+          + ' ' + (el.getAttribute('href') || '')
+          + ' ' + (el.id || '');
+        rememberCascadeId(extractCascadeId('{"cascadeId":"' + (raw.match(CASCADE_ID_FIND) || [''])[0] + '"}'), 'dom');
+      }
+    } catch (e) {}
+  }
+
+  installCascadeHooks();
 
   function readStatusRaw() {
     if (ipcRenderer && typeof ipcRenderer.sendSync === 'function') {
@@ -414,6 +552,8 @@
     }
 
     function render() {
+      try { scanDomCascade(); } catch (e) {}
+      if (lastCascadeId) { rememberCascadeId(lastCascadeId, 'keep-alive'); }
       var st = readStatus();
       while (tip.firstChild) { tip.removeChild(tip.firstChild); }
       if (st.offline) {
@@ -470,6 +610,7 @@
     }
 
     function dock() {
+      try { scanDomCascade(); } catch (e) {}
       var anchor = null;
       try { anchor = findAnchor(); } catch (e) { anchor = null; }
       if (!anchor || !anchor.parentNode) {
@@ -488,6 +629,21 @@
 
     render();
     window.setInterval(render, POLL_MS);
+    if (fsNode && STATUS_FILE && typeof fsNode.watch === 'function') {
+      try {
+        var statusDir = STATUS_FILE.replace(/[^\\\/]+$/, '');
+        var statusWatchTimer = 0;
+        fsNode.watch(statusDir, function (_evt, fn) {
+          var name = fn ? String(fn) : '';
+          if (name && name.indexOf('status.json') === -1) { return; }
+          if (statusWatchTimer) { return; }
+          statusWatchTimer = window.setTimeout(function () {
+            statusWatchTimer = 0;
+            try { render(); } catch (e) {}
+          }, 30);
+        });
+      } catch (e) {}
+    }
 
     dock();
     window.setInterval(dock, DOCK_MS);

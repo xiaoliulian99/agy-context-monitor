@@ -18,6 +18,7 @@ function winExe(kind) {
     powershell: 'System32\\WindowsPowerShell\\v1.0\\powershell.exe',
     netstat: 'System32\\NETSTAT.EXE',
     wmic: 'System32\\wbem\\WMIC.exe',
+    tasklist: 'System32\\tasklist.exe',
   };
   return path.join(root, rel[kind]);
 }
@@ -203,12 +204,10 @@ function findAntigravityInstallDir() {
 
 async function isAntigravityRunning() {
   try {
-    const psExe = winExe('powershell');
-    const result = await execFileAsync(psExe, [
-      '-NoProfile', '-NoLogo', '-Command',
-      "Get-Process -Name Antigravity -ErrorAction SilentlyContinue | Select-Object -First 1 Id",
-    ], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
-    return String(result.stdout || '').trim().length > 0;
+    const result = await execFileAsync(winExe('tasklist'), [
+      '/fi', 'imagename eq Antigravity.exe', '/nh',
+    ], { encoding: 'utf-8', timeout: 3000, windowsHide: true });
+    return String(result.stdout || '').toLowerCase().includes('antigravity.exe');
   } catch {
     return false;
   }

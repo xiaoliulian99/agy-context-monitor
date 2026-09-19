@@ -5,6 +5,7 @@ const {
 } = require('./antigravity/discovery');
 const { rpcCall, metaBody } = require('./antigravity/rpc');
 const { getAllTrajectories, getLastSelectedCascadeId, selectCurrentSession, getTrajectorySteps } = require('./antigravity/session');
+const { readActiveCascadeHint } = require('./status');
 const { computeContext, limitsFromAvailableModels, labelsFromUserStatus, COMPRESSION_MIN_DROP } = require('./context/calculator');
 
 const BASE_INTERVAL_MS = 5000;
@@ -58,6 +59,7 @@ class Monitor {
     this.prevStepCount = null;
     this.prevContextUsed = null;
     this.prevCascadeId = null;
+    this.cachedTrajectories = [];
   }
 
   invalidateLs() {
@@ -66,6 +68,7 @@ class Monitor {
     this.displayNames = {};
     this.cachedStepsKey = '';
     this.cachedSteps = [];
+    this.cachedTrajectories = [];
   }
 
   resetSessionMemory() {
@@ -145,8 +148,44 @@ class Monitor {
     return usage;
   }
 
+  async finalizeSession(installDir, ls, session) {
+    const switched = this.trackedCascadeId && this.trackedCascadeId !== session.cascadeId;
+    if (switched) this.resetSessionMemory();
+    this.trackedCascadeId = session.cascadeId;
+    const steps = await this.stepsFor(session);
+    let usage = computeContext(steps, {
+      fallbackModel: session.requestedModel || session.generatorModel,
+      limits: this.limits,
+      displayNames: this.displayNames,
+    });
+    usage = this.applyEventFlags(session, usage, switched);
+    let reason = '';
+    if (switched) reason = 'session switched';
+    else if (usage.rewindDetected) reason = `rewind detected (steps ${usage.previousStepCount} -> ${session.stepCount})`;
+    else if (usage.compressionDetected) reason = `compression detected (drop ${usage.compressionDrop})`;
+    return snapshot('live', {
+      installDir,
+      ls,
+      session,
+      usage,
+      reason,
+    });
+  }
+
   async collect() {
     const installDir = findAntigravityInstallDir();
+    const hinted = readActiveCascadeHint();
+    if (this.ls && hinted && this.cachedTrajectories.length) {
+      const cached = this.cachedTrajectories.find((t) => t.cascadeId === hinted);
+      if (cached && cached.cascadeId !== this.trackedCascadeId) {
+        try {
+          return await this.finalizeSession(installDir, this.ls, cached);
+        } catch (_) {
+          this.invalidateLs();
+        }
+      }
+    }
+
     const running = await isAntigravityRunning();
     if (!installDir && !running) {
       this.invalidateLs();
@@ -177,18 +216,19 @@ class Monitor {
     }
 
     let trajectories;
-    let selectedCascadeId = '';
+    let rpcSelected = '';
     try {
-      [trajectories, selectedCascadeId] = await Promise.all([
-        getAllTrajectories(ls),
-        getLastSelectedCascadeId(ls),
-      ]);
+      const trajPromise = getAllTrajectories(ls);
+      const settingsPromise = hinted ? Promise.resolve('') : getLastSelectedCascadeId(ls);
+      [trajectories, rpcSelected] = await Promise.all([trajPromise, settingsPromise]);
+      this.cachedTrajectories = trajectories;
       await this.refreshModelMeta();
     } catch (err) {
       this.invalidateLs();
       throw err;
     }
 
+    const selectedCascadeId = hinted || readActiveCascadeHint() || rpcSelected;
     const session = selectCurrentSession(trajectories, this.trackedCascadeId, selectedCascadeId);
     if (!session) {
       this.trackedCascadeId = null;
@@ -196,37 +236,12 @@ class Monitor {
       return snapshot('no-session', { installDir, ls, reason: 'no session' });
     }
 
-    const switched = this.trackedCascadeId && this.trackedCascadeId !== session.cascadeId;
-    if (switched) this.resetSessionMemory();
-    this.trackedCascadeId = session.cascadeId;
-
-    let steps;
     try {
-      steps = await this.stepsFor(session);
+      return await this.finalizeSession(installDir, ls, session);
     } catch (err) {
       this.invalidateLs();
       throw err;
     }
-
-    let usage = computeContext(steps, {
-      fallbackModel: session.requestedModel || session.generatorModel,
-      limits: this.limits,
-      displayNames: this.displayNames,
-    });
-    usage = this.applyEventFlags(session, usage, switched);
-
-    let reason = '';
-    if (switched) reason = 'session switched';
-    else if (usage.rewindDetected) reason = `rewind detected (steps ${usage.previousStepCount} -> ${session.stepCount})`;
-    else if (usage.compressionDetected) reason = `compression detected (drop ${usage.compressionDrop})`;
-
-    return snapshot('live', {
-      installDir,
-      ls,
-      session,
-      usage,
-      reason,
-    });
   }
 }
 

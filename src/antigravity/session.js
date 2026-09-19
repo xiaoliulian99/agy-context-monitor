@@ -39,6 +39,38 @@ function parseTrajectories(resp) {
   return result;
 }
 
+function isCascadeId(value) {
+  return typeof value === 'string'
+    && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(value.trim());
+}
+
+function extractCascadeId(text) {
+  const named = String(text || '').match(/"(?:cascadeId|cascade_id|conversationId|conversation_id)"\s*:\s*"([0-9a-fA-F-]{36})"/);
+  if (named && isCascadeId(named[1])) return named[1];
+  return '';
+}
+
+function isCurrentCascadeRpc(url) {
+  const u = String(url || '');
+  if (/GetAllCascadeTrajectories/i.test(u)) return false;
+  return /GetCascadeTrajectory|GetCascadeTrajectorySteps|GetConversationMetadata|LoadTrajectory|SendUserCascadeMessage|SmartFocusConversation|RecordChatPanelSession|StreamCascade|InitializeCascadePanelState|GetUserTrajectory|WaitForConversationFullyIdle/i.test(u);
+}
+
+function stubSession(cascadeId) {
+  return {
+    cascadeId,
+    trajectoryId: '',
+    summary: cascadeId,
+    stepCount: 0,
+    status: 'pending',
+    lastModifiedTime: '',
+    createdTime: '',
+    requestedModel: '',
+    generatorModel: '',
+    workspaceUris: [],
+  };
+}
+
 function pickSelectedCascadeId(resp) {
   if (!resp || typeof resp !== 'object') return '';
   const settings = resp.userSettings || resp.user_settings || {};
@@ -48,7 +80,7 @@ function pickSelectedCascadeId(resp) {
 
 async function getLastSelectedCascadeId(ls) {
   try {
-    const resp = await rpcCall(ls, 'GetUserSettings', metaBody(), 10000);
+    const resp = await rpcCall(ls, 'GetUserSettings', metaBody(), 1500);
     return pickSelectedCascadeId(resp);
   } catch {
     return '';
@@ -56,11 +88,12 @@ async function getLastSelectedCascadeId(ls) {
 }
 
 function selectCurrentSession(trajectories, trackedCascadeId, selectedCascadeId) {
-  if (!trajectories.length) return null;
   if (selectedCascadeId) {
-    const selected = trajectories.find((t) => t.cascadeId === selectedCascadeId);
+    const selected = (trajectories || []).find((t) => t.cascadeId === selectedCascadeId);
     if (selected) return selected;
+    return stubSession(selectedCascadeId);
   }
+  if (!trajectories.length) return null;
   const running = trajectories
     .filter((t) => t.status === RUNNING)
     .sort((a, b) => String(b.lastModifiedTime).localeCompare(String(a.lastModifiedTime)));
@@ -120,6 +153,10 @@ async function getTrajectorySteps(ls, cascadeId, stepCount) {
 module.exports = {
   RUNNING,
   parseTrajectories,
+  isCascadeId,
+  extractCascadeId,
+  isCurrentCascadeRpc,
+  stubSession,
   pickSelectedCascadeId,
   getLastSelectedCascadeId,
   selectCurrentSession,

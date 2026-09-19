@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const { Monitor, fingerprint, nextBackoff, BASE_INTERVAL_MS } = require('./monitor');
-const { writeStatus } = require('./status');
+const { writeStatus, watchActiveCascade } = require('./status');
 
 function argFlag(name) {
   return process.argv.includes(name);
@@ -77,48 +77,88 @@ async function main() {
   let failCount = 0;
   let failKind = 'discovery';
   let interval = BASE_INTERVAL_MS;
+  let kick = null;
+  let busy = false;
+  let again = false;
+
+  function wait(ms) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (kick === wake) kick = null;
+        resolve('tick');
+      }, ms);
+      const wake = () => {
+        clearTimeout(timer);
+        if (kick === wake) kick = null;
+        resolve('hint');
+      };
+      kick = wake;
+    });
+  }
 
   const runOnce = async () => {
+    if (busy) {
+      again = true;
+      return;
+    }
+    busy = true;
     try {
-      const snap = await monitor.collect();
-      try { writeStatus(snap); } catch (_) { /* HUD file is best-effort */ }
-      const fp = fingerprint(snap);
-      const changed = fp !== lastFp;
-      if (!watch || changed || !lastFp) {
-        if (watch && lastFp) console.log('---');
-        printSnapshot(snap);
-        lastFp = fp;
-        lastState = snap.state;
-      }
-      if (snap.state === 'live' || snap.state === 'no-session') {
-        failCount = 0;
-        interval = BASE_INTERVAL_MS;
-      } else {
-        failKind = snap.state === 'waiting-ls' || snap.state === 'waiting-ag' || snap.state === 'no-install'
-          ? 'discovery'
-          : 'rpc';
-        failCount += 1;
-        interval = nextBackoff(failKind, failCount);
-        if (watch && changed && lastState !== 'live') {
-          console.log(`Retry in ${interval / 1000}s`);
+      do {
+        again = false;
+        try {
+          const snap = await monitor.collect();
+          try { writeStatus(snap); } catch (_) { /* HUD file is best-effort */ }
+          const fp = fingerprint(snap);
+          const changed = fp !== lastFp;
+          if (!watch || changed || !lastFp) {
+            if (watch && lastFp) console.log('---');
+            printSnapshot(snap);
+            lastFp = fp;
+            lastState = snap.state;
+          }
+          if (snap.state === 'live' || snap.state === 'no-session') {
+            failCount = 0;
+            interval = BASE_INTERVAL_MS;
+          } else {
+            failKind = snap.state === 'waiting-ls' || snap.state === 'waiting-ag' || snap.state === 'no-install'
+              ? 'discovery'
+              : 'rpc';
+            failCount += 1;
+            interval = nextBackoff(failKind, failCount);
+            if (watch && changed && lastState !== 'live') {
+              console.log(`Retry in ${interval / 1000}s`);
+            }
+          }
+        } catch (err) {
+          failKind = 'rpc';
+          failCount += 1;
+          interval = nextBackoff('rpc', failCount);
+          monitor.invalidateLs();
+          lastFp = `error:${err.message}`;
+          console.log(`Error: ${err.message}`);
+          if (watch) console.log(`Retry in ${interval / 1000}s`);
         }
-      }
-    } catch (err) {
-      failKind = 'rpc';
-      failCount += 1;
-      interval = nextBackoff('rpc', failCount);
-      monitor.invalidateLs();
-      lastFp = `error:${err.message}`;
-      console.log(`Error: ${err.message}`);
-      if (watch) console.log(`Retry in ${interval / 1000}s`);
+      } while (again);
+    } finally {
+      busy = false;
     }
   };
+
+  if (watch) {
+    watchActiveCascade((id, prev) => {
+      if (id && id !== prev) {
+        again = true;
+        if (kick) kick();
+        else runOnce();
+      }
+    });
+  }
 
   await runOnce();
   if (!watch) return;
 
   for (;;) {
-    await sleep(interval);
+    await wait(interval);
     await runOnce();
   }
 }

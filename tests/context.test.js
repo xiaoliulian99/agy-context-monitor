@@ -1,6 +1,17 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { detectCompression, computeContext, COMPRESSION_MIN_DROP } = require('../src/context/calculator');
 const { Monitor } = require('../src/monitor');
-const { RUNNING, pickSelectedCascadeId, selectCurrentSession } = require('../src/antigravity/session');
+const {
+  RUNNING,
+  pickSelectedCascadeId,
+  selectCurrentSession,
+  extractCascadeId,
+  isCurrentCascadeRpc,
+  stubSession,
+} = require('../src/antigravity/session');
+const { writeActiveCascadeHint, readActiveCascadeHint, watchActiveCascade } = require('../src/status');
 
 function usage(input, cache) {
   return { inputTokens: String(input), outputTokens: '10', cacheReadTokens: String(cache) };
@@ -88,12 +99,52 @@ const olderB = traj('b', { lastModifiedTime: '2025-12-01T00:00:00Z' });
 
 assert(selectCurrentSession([a, olderB], 'a', 'b').cascadeId === 'b', 'selected idle session wins immediately');
 assert(selectCurrentSession([runningA, olderB], 'a', 'b').cascadeId === 'b', 'selected session wins over running tracked');
-assert(selectCurrentSession([a, b], 'a', 'missing').cascadeId === 'b', 'unknown selected falls back to newer modified');
+assert(selectCurrentSession([a, b], 'a', 'c0ffeeee-0000-4000-8000-00000000000c').cascadeId === 'c0ffeeee-0000-4000-8000-00000000000c', 'hinted session not in list still wins');
 assert(selectCurrentSession([a, olderB], 'a', '').cascadeId === 'a', 'tracked sticks when selected missing and newer is older');
 assert(selectCurrentSession([runningA, b], 'a', '').cascadeId === 'a', 'running tracked kept without selected id');
 assert(selectCurrentSession([a, b], null, '').cascadeId === 'b', 'newest used when nothing tracked');
+assert(stubSession('c0ffeeee-0000-4000-8000-00000000000c').stepCount === 0, 'stub session has zero steps');
 
-if (failed) {
-  process.exit(1);
+assert(extractCascadeId('{"cascadeId":"87a19af4-e8ff-4224-9812-f270360a73c4"}') === '87a19af4-e8ff-4224-9812-f270360a73c4', 'extract cascadeId from json');
+assert(extractCascadeId('{"trajectoryId":"8336e6d5-52b8-4e5d-beaf-f26850cc9656"}') === '', 'ignore trajectoryId');
+assert(isCurrentCascadeRpc('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectorySteps') === true, 'steps rpc is current');
+assert(isCurrentCascadeRpc('/exa.language_server_pb.LanguageServerService/GetAllCascadeTrajectories') === false, 'list rpc is not current');
+
+const prevLocal = process.env.LOCALAPPDATA;
+const hintDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-hint-'));
+process.env.LOCALAPPDATA = hintDir;
+writeActiveCascadeHint('87a19af4-e8ff-4224-9812-f270360a73c4', 'test');
+assert(readActiveCascadeHint() === '87a19af4-e8ff-4224-9812-f270360a73c4', 'read fresh cascade hint');
+const stalePath = path.join(hintDir, 'agy-context-monitor', 'active-cascade.json');
+fs.writeFileSync(stalePath, JSON.stringify({
+  cascadeId: '87a19af4-e8ff-4224-9812-f270360a73c4',
+  updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+  source: 'test',
+}));
+assert(readActiveCascadeHint(120000) === '', 'stale cascade hint ignored');
+
+writeActiveCascadeHint('87a19af4-e8ff-4224-9812-f270360a73c4', 'test');
+const seen = [];
+const stopWatch = watchActiveCascade((id) => { seen.push(id); });
+writeActiveCascadeHint('f8a760ca-d1cd-49ee-a7a5-c24a80a883da', 'test');
+
+function finish(okWatch) {
+  stopWatch();
+  assert(okWatch, 'watch fires on cascade hint change');
+  if (prevLocal === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = prevLocal;
+  if (failed) process.exit(1);
+  console.log('all tests passed');
 }
-console.log('all tests passed');
+
+let n = 0;
+const timer = setInterval(() => {
+  n += 1;
+  if (seen[0] === 'f8a760ca-d1cd-49ee-a7a5-c24a80a883da') {
+    clearInterval(timer);
+    finish(true);
+  } else if (n >= 30) {
+    clearInterval(timer);
+    finish(false);
+  }
+}, 50);
