@@ -9,3 +9,4 @@ node_modules/
 monitor.pid
 .DS_Store
 Thumbs.db
+inject.log

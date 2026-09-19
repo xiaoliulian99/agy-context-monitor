@@ -60,11 +60,35 @@ function isAntigravityRunningSync() {
 }
 
 function closeAntigravity() {
-  try {
-    child_process.execSync('taskkill /f /im Antigravity.exe /t', { stdio: 'ignore' });
-  } catch (_) { /* not running */ }
-  const t = Date.now();
-  while (Date.now() - t < 1500) { /* wait for file unlock */ }
+  for (let i = 0; i < 8; i++) {
+    try {
+      child_process.execSync('taskkill /f /im Antigravity.exe /t', { stdio: 'ignore' });
+    } catch (_) { /* not running */ }
+    const t = Date.now();
+    while (Date.now() - t < 400) { /* wait */ }
+    if (!isAntigravityRunningSync()) break;
+  }
+  const t2 = Date.now();
+  while (Date.now() - t2 < 800) { /* wait for file unlock */ }
+}
+
+function startMonitor(nodePath, scriptPath) {
+  const dir = path.join(process.env.LOCALAPPDATA || '', 'agy-context-monitor');
+  fs.mkdirSync(dir, { recursive: true });
+  const pidFile = path.join(dir, 'monitor.pid');
+  if (fs.existsSync(pidFile)) {
+    const old = parseInt(String(fs.readFileSync(pidFile, 'utf8')).trim(), 10);
+    if (old > 0) {
+      try { child_process.execSync(`taskkill /f /pid ${old} /t`, { stdio: 'ignore' }); } catch (_) { /* gone */ }
+    }
+  }
+  const child = child_process.spawn(nodePath, [scriptPath, '--watch'], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  fs.writeFileSync(pidFile, String(child.pid), 'utf8');
+  child.unref();
 }
 
 function launchAntigravity(installDir) {
@@ -86,8 +110,31 @@ function findNode() {
     const out = child_process.execSync('where.exe node', { encoding: 'utf8' }).trim().split(/\r?\n/)[0];
     if (out && fs.existsSync(out)) return out;
   } catch (_) { /* fall through */ }
-  const fallback = 'C:\\Program Files\\nodejs\\node.exe';
-  return fs.existsSync(fallback) ? fallback : null;
+  const fallbacks = [
+    'C:\\Program Files\\nodejs\\node.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'nodejs', 'node.exe'),
+  ];
+  for (const fallback of fallbacks) {
+    if (fallback && fs.existsSync(fallback)) return fallback;
+  }
+  return null;
+}
+
+function prependNodeDirToPath(nodePath) {
+  if (!nodePath) return;
+  const dir = path.dirname(nodePath);
+  const cur = process.env.PATH || '';
+  if (!cur.toLowerCase().split(path.delimiter).includes(dir.toLowerCase())) {
+    process.env.PATH = dir + path.delimiter + cur;
+  }
+}
+
+function asarBin() {
+  const nodePath = findNode();
+  prependNodeDirToPath(nodePath);
+  const npxCmd = nodePath ? path.join(path.dirname(nodePath), 'npx.cmd') : '';
+  const npx = npxCmd && fs.existsSync(npxCmd) ? `"${npxCmd}"` : 'npx';
+  return `${npx} -y @electron/asar`;
 }
 
 function bootstrapSource(nodePath, scriptPath) {
@@ -101,12 +148,21 @@ function bootstrapSource(nodePath, scriptPath) {
     const path = require('path');
     const dir = path.join(process.env.LOCALAPPDATA || '', 'agy-context-monitor');
     const statusFile = path.join(dir, 'status.json');
+    const activeFile = path.join(dir, 'active-cascade.json');
     try {
       const { ipcMain } = require('electron');
       ipcMain.removeAllListeners('agy-ctx-read-status');
       ipcMain.on('agy-ctx-read-status', (event) => {
         try { event.returnValue = fs.readFileSync(statusFile, 'utf8'); }
         catch (_) { event.returnValue = ''; }
+      });
+      ipcMain.removeAllListeners('agy-ctx-write-active');
+      ipcMain.on('agy-ctx-write-active', (event, payload) => {
+        try {
+          fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(activeFile, String(payload || ''), 'utf8');
+          event.returnValue = true;
+        } catch (_) { event.returnValue = false; }
       });
     } catch (_) { /* ipc optional */ }
     const pidFile = path.join(dir, 'monitor.pid');
@@ -115,7 +171,14 @@ function bootstrapSource(nodePath, scriptPath) {
     if (fs.existsSync(pidFile)) {
       const old = parseInt(String(fs.readFileSync(pidFile, 'utf8')).trim(), 10);
       if (old > 0) {
-        try { process.kill(old, 0); running = true; } catch (_) { running = false; }
+        try {
+          const { execSync } = require('child_process');
+          const out = execSync('tasklist /fi "PID eq ' + old + '" /nh', {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          });
+          running = out.includes(String(old)) && /node/i.test(out);
+        } catch (_) { running = false; }
       }
     }
     if (running) return;
@@ -132,29 +195,44 @@ ${BOOT_END}
 `;
 }
 
+function copyAsarUnlocked(src, dest) {
+  let lastErr = null;
+  for (let i = 0; i < 6; i++) {
+    try {
+      fs.copyFileSync(src, dest);
+      return;
+    } catch (e) {
+      lastErr = e;
+      console.log('[警告] app.asar 被占用，重试关闭 Antigravity...', e.message);
+      closeAntigravity();
+    }
+  }
+  throw new Error('write app.asar failed (locked): ' + (lastErr && lastErr.message));
+}
+
 function extractPack(asarPath, tempDir, pack) {
-  const asarBin = 'npx -y @electron/asar';
+  const bin = asarBin();
   if (!pack) {
     if (fs.existsSync(tempDir)) fs.rmSync(tempDir, { recursive: true, force: true });
-    const res = run(`${asarBin} extract "${asarPath}" "${tempDir}"`);
+    const res = run(`${bin} extract "${asarPath}" "${tempDir}"`);
     if (!res.ok) throw new Error('asar extract failed: ' + res.out);
     return;
   }
   const packed = asarPath + '.agy-new';
-  const res = run(`${asarBin} pack "${tempDir}" "${packed}"`);
+  const res = run(`${bin} pack "${tempDir}" "${packed}"`);
   fs.rmSync(tempDir, { recursive: true, force: true });
   if (!res.ok) {
     if (fs.existsSync(packed)) fs.unlinkSync(packed);
     throw new Error('asar pack failed: ' + res.out);
   }
-  fs.copyFileSync(packed, asarPath);
+  copyAsarUnlocked(packed, asarPath);
   fs.unlinkSync(packed);
 }
 
 function extractInnerFile(asarPath, innerFile, destFile) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-asar-file-'));
   try {
-    const res = run(`npx -y @electron/asar extract-file "${asarPath}" "${innerFile}"`, { cwd: tmp });
+    const res = run(`${asarBin()} extract-file "${asarPath}" "${innerFile}"`, { cwd: tmp });
     const extracted = path.join(tmp, path.basename(innerFile));
     if (!res.ok || !fs.existsSync(extracted)) {
       throw new Error('asar extract-file failed: ' + (res.out || innerFile));
@@ -275,10 +353,14 @@ function install() {
 
   console.log('[打包] 正在写回 app.asar...');
   extractPack(asarPath, tempDir, true);
+  if (!asarHasHud(asarPath)) {
+    throw new Error('asar wrote but HUD marker missing; inject aborted');
+  }
   console.log('[√] 已注入 HUD 到 dist/preload.js');
   console.log('[√] 已注入 bootstrap 到 dist/main.js');
+  startMonitor(nodePath, monitorScript);
   console.log('[监控]', nodePath, monitorScript, '--watch');
-  if (wasRunning) launchAntigravity(installDir);
+  launchAntigravity(installDir);
 }
 
 function uninstall() {

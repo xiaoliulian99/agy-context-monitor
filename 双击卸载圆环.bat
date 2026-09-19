@@ -1,35 +1,42 @@
 @echo off
-setlocal
-chcp 65001 >nul
-title Antigravity Context 圆环 - 卸载
+setlocal EnableExtensions
 cd /d "%~dp0"
+set "LOG=%~dp0inject.log"
 
 set "NODE_BIN="
-where node >nul 2>nul && set "NODE_BIN=node"
-if not defined NODE_BIN if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_BIN=%ProgramFiles%\nodejs\node.exe"
+if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_BIN=%ProgramFiles%\nodejs\node.exe"
+if not defined NODE_BIN if exist "%LocalAppData%\Programs\nodejs\node.exe" set "NODE_BIN=%LocalAppData%\Programs\nodejs\node.exe"
 if not defined NODE_BIN (
-  echo.
-  echo [X] 未找到 Node.js。请安装 LTS: https://nodejs.org/
-  echo.
+  for /f "delims=" %%I in ('where node 2^>nul') do (
+    set "NODE_BIN=%%I"
+    goto :have_node
+  )
+)
+:have_node
+
+if not defined NODE_BIN (
+  echo [X] Node.js not found. Install LTS: https://nodejs.org/
+  echo [%DATE% %TIME%] Node.js not found>>"%LOG%"
   pause
   exit /b 1
 )
 
 echo.
-echo [1/2] 正在移除 Context 圆环...
-echo      会关闭 Antigravity 以解锁 app.asar。汉化包不会被清掉。
+echo Removing context ring. Antigravity will be closed.
+echo Log: "%LOG%"
 echo.
-"%NODE_BIN%" "%~dp0injector\install.js" --uninstall %*
-if errorlevel 1 (
+echo ==== %DATE% %TIME% uninstall ====>>"%LOG%"
+"%NODE_BIN%" "%~dp0injector\install.js" --uninstall %* >>"%LOG%" 2>&1
+set "ERR=%ERRORLEVEL%"
+type "%LOG%"
+if not "%ERR%"=="0" (
   echo.
-  echo [X] 卸载失败，请查看上方错误。
-  echo.
+  echo [X] Uninstall failed. See inject.log
   pause
   exit /b 1
 )
 
 echo.
-echo [2/2] 已移除圆环。重新打开 Antigravity 即可。
+echo [OK] Ring removed. Localization was left intact.
 echo.
-echo 窗口将在 5 秒后关闭...
-timeout /t 5
+pause
