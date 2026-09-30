@@ -41,10 +41,19 @@
   function statusPath() {
     try {
       var env = (typeof process !== 'undefined' && process && process.env) ? process.env : {};
+      if (!pathNode) { return null; }
+      if (typeof process !== 'undefined' && process.platform === 'darwin') {
+        var home = env.HOME || '';
+        if (!home) {
+          try { home = require('os').homedir(); } catch (e2) { home = ''; }
+        }
+        if (!home) { return null; }
+        return pathNode.join(home, 'Library', 'Application Support', 'agy-context-monitor', 'status.json');
+      }
       var base = env.LOCALAPPDATA || null;
       if (!base && env.APPDATA) { base = env.APPDATA.replace(/Roaming$/i, 'Local'); }
       if (!base && env.USERPROFILE) { base = env.USERPROFILE + '\\AppData\\Local'; }
-      if (!base || !pathNode) { return null; }
+      if (!base) { return null; }
       return pathNode.join(base, 'agy-context-monitor', 'status.json');
     } catch (e) { return null; }
   }

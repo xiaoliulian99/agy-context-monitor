@@ -11,7 +11,7 @@ const {
   isCurrentCascadeRpc,
   stubSession,
 } = require('../src/antigravity/session');
-const { writeActiveCascadeHint, readActiveCascadeHint, watchActiveCascade } = require('../src/status');
+const { writeActiveCascadeHint, readActiveCascadeHint, watchActiveCascade, resolveMonitorDataDir } = require('../src/status');
 
 function usage(input, cache) {
   return { inputTokens: String(input), outputTokens: '10', cacheReadTokens: String(cache) };
@@ -109,6 +109,17 @@ assert(extractCascadeId('{"cascadeId":"87a19af4-e8ff-4224-9812-f270360a73c4"}') 
 assert(extractCascadeId('{"trajectoryId":"8336e6d5-52b8-4e5d-beaf-f26850cc9656"}') === '', 'ignore trajectoryId');
 assert(isCurrentCascadeRpc('/exa.language_server_pb.LanguageServerService/GetCascadeTrajectorySteps') === true, 'steps rpc is current');
 assert(isCurrentCascadeRpc('/exa.language_server_pb.LanguageServerService/GetAllCascadeTrajectories') === false, 'list rpc is not current');
+
+assert(
+  resolveMonitorDataDir('win32', { LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local' }, 'C:\\Users\\a')
+    === path.join('C:\\Users\\a\\AppData\\Local', 'agy-context-monitor'),
+  'win data dir uses LOCALAPPDATA',
+);
+assert(
+  resolveMonitorDataDir('darwin', { HOME: '/Users/a', LOCALAPPDATA: 'C:\\nope' }, '/Users/a')
+    === path.join('/Users/a', 'Library', 'Application Support', 'agy-context-monitor'),
+  'mac data dir ignores LOCALAPPDATA',
+);
 
 const prevLocal = process.env.LOCALAPPDATA;
 const hintDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-hint-'));

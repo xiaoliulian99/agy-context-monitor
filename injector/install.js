@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const child_process = require('child_process');
-const { findAntigravityInstallDir } = require('../src/antigravity/discovery');
+const { findAntigravityLayout } = require('../src/antigravity/discovery');
+const { resolveMonitorDataDir } = require('../src/status');
 
 const HUD_START = '/* --- AGY-CONTEXT-MONITOR HUD START --- */';
 const HUD_END = '/* --- AGY-CONTEXT-MONITOR HUD END --- */';
@@ -48,6 +49,14 @@ function shouldRefreshBackup(currentHasHud) {
 }
 
 function isAntigravityRunningSync() {
+  if (process.platform === 'darwin') {
+    try {
+      child_process.execFileSync('/usr/bin/pgrep', ['-x', 'Antigravity'], { stdio: 'ignore' });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
   try {
     const stdout = child_process.execSync('tasklist /fi "imagename eq Antigravity.exe" /nh', {
       encoding: 'utf8',
@@ -60,6 +69,25 @@ function isAntigravityRunningSync() {
 }
 
 function closeAntigravity() {
+  if (process.platform === 'darwin') {
+    for (const app of ['Antigravity', 'Antigravity IDE']) {
+      try {
+        child_process.execFileSync('/usr/bin/osascript', ['-e', `quit app "${app}"`], { stdio: 'ignore' });
+      } catch (_) { /* not running */ }
+    }
+    const names = ['Antigravity', 'Antigravity Helper', 'Antigravity Helper (GPU)', 'Antigravity Helper (Renderer)'];
+    for (let i = 0; i < 8; i++) {
+      for (const name of names) {
+        try { child_process.execFileSync('/usr/bin/killall', [name], { stdio: 'ignore' }); } catch (_) { /* gone */ }
+      }
+      const t = Date.now();
+      while (Date.now() - t < 400) { /* wait */ }
+      if (!isAntigravityRunningSync()) break;
+    }
+    const t2 = Date.now();
+    while (Date.now() - t2 < 800) { /* wait for file unlock */ }
+    return;
+  }
   for (let i = 0; i < 8; i++) {
     try {
       child_process.execSync('taskkill /f /im Antigravity.exe /t', { stdio: 'ignore' });
@@ -72,15 +100,22 @@ function closeAntigravity() {
   while (Date.now() - t2 < 800) { /* wait for file unlock */ }
 }
 
+function stopMonitorPid(pid) {
+  if (!(pid > 0)) return;
+  if (process.platform === 'darwin') {
+    try { process.kill(pid, 'SIGKILL'); } catch (_) { /* gone */ }
+    return;
+  }
+  try { child_process.execSync(`taskkill /f /pid ${pid} /t`, { stdio: 'ignore' }); } catch (_) { /* gone */ }
+}
+
 function startMonitor(nodePath, scriptPath) {
-  const dir = path.join(process.env.LOCALAPPDATA || '', 'agy-context-monitor');
+  const dir = resolveMonitorDataDir(process.platform, process.env, os.homedir());
   fs.mkdirSync(dir, { recursive: true });
   const pidFile = path.join(dir, 'monitor.pid');
   if (fs.existsSync(pidFile)) {
     const old = parseInt(String(fs.readFileSync(pidFile, 'utf8')).trim(), 10);
-    if (old > 0) {
-      try { child_process.execSync(`taskkill /f /pid ${old} /t`, { stdio: 'ignore' }); } catch (_) { /* gone */ }
-    }
+    stopMonitorPid(old);
   }
   const child = child_process.spawn(nodePath, [scriptPath, '--watch'], {
     detached: true,
@@ -91,9 +126,24 @@ function startMonitor(nodePath, scriptPath) {
   child.unref();
 }
 
-function launchAntigravity(installDir) {
-  const exe = path.join(installDir, 'Antigravity.exe');
-  if (!fs.existsSync(exe)) {
+function launchAntigravity(layout) {
+  if (process.platform === 'darwin') {
+    const app = layout && layout.appBundle;
+    if (!app || !fs.existsSync(app)) {
+      console.log('[启动] 未找到 Antigravity.app，请手动打开。');
+      return;
+    }
+    try {
+      child_process.spawn('/usr/bin/open', ['-a', app], { detached: true, stdio: 'ignore' }).unref();
+      console.log('[启动] 已重新打开 Antigravity。');
+    } catch (e) {
+      console.log('[启动] 自动打开失败，请手动打开。', e.message);
+    }
+    return;
+  }
+  const installDir = layout && layout.installDir;
+  const exe = installDir ? path.join(installDir, 'Antigravity.exe') : '';
+  if (!exe || !fs.existsSync(exe)) {
     console.log('[启动] 未找到 Antigravity.exe，请手动打开。');
     return;
   }
@@ -106,6 +156,17 @@ function launchAntigravity(installDir) {
 }
 
 function findNode() {
+  if (process.platform === 'darwin') {
+    try {
+      const out = child_process.execFileSync('/usr/bin/which', ['node'], { encoding: 'utf8' }).trim().split(/\n/)[0];
+      if (out && fs.existsSync(out)) return out;
+    } catch (_) { /* fall through */ }
+    const macFallbacks = ['/opt/homebrew/bin/node', '/usr/local/bin/node'];
+    for (const fallback of macFallbacks) {
+      if (fs.existsSync(fallback)) return fallback;
+    }
+    return null;
+  }
   try {
     const out = child_process.execSync('where.exe node', { encoding: 'utf8' }).trim().split(/\r?\n/)[0];
     if (out && fs.existsSync(out)) return out;
@@ -132,6 +193,11 @@ function prependNodeDirToPath(nodePath) {
 function asarBin() {
   const nodePath = findNode();
   prependNodeDirToPath(nodePath);
+  if (process.platform === 'darwin') {
+    const npxPath = nodePath ? path.join(path.dirname(nodePath), 'npx') : '';
+    const npx = npxPath && fs.existsSync(npxPath) ? `"${npxPath}"` : 'npx';
+    return `${npx} -y @electron/asar`;
+  }
   const npxCmd = nodePath ? path.join(path.dirname(nodePath), 'npx.cmd') : '';
   const npx = npxCmd && fs.existsSync(npxCmd) ? `"${npxCmd}"` : 'npx';
   return `${npx} -y @electron/asar`;
@@ -146,7 +212,10 @@ function bootstrapSource(nodePath, scriptPath) {
     const { spawn } = require('child_process');
     const fs = require('fs');
     const path = require('path');
-    const dir = path.join(process.env.LOCALAPPDATA || '', 'agy-context-monitor');
+    const os = require('os');
+    const dir = process.platform === 'darwin'
+      ? path.join(os.homedir(), 'Library', 'Application Support', 'agy-context-monitor')
+      : path.join(process.env.LOCALAPPDATA || '', 'agy-context-monitor');
     const statusFile = path.join(dir, 'status.json');
     const activeFile = path.join(dir, 'active-cascade.json');
     try {
@@ -172,13 +241,11 @@ function bootstrapSource(nodePath, scriptPath) {
       const old = parseInt(String(fs.readFileSync(pidFile, 'utf8')).trim(), 10);
       if (old > 0) {
         try {
-          const { execSync } = require('child_process');
-          const out = execSync('tasklist /fi "PID eq ' + old + '" /nh', {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-          });
-          running = out.includes(String(old)) && /node/i.test(out);
-        } catch (_) { running = false; }
+          process.kill(old, 0);
+          running = true;
+        } catch (err) {
+          running = !!(err && err.code === 'EPERM');
+        }
       }
     }
     if (running) return;
@@ -244,16 +311,24 @@ function extractInnerFile(asarPath, innerFile, destFile) {
   }
 }
 
-function resolveInstallDir() {
+function resolveLayout() {
   const fromArg = getOptionValue('--install-dir');
   if (fromArg) process.env.ANTIGRAVITY_INSTALL_DIR = fromArg;
-  const installDir = findAntigravityInstallDir();
-  if (!installDir) throw new Error('Antigravity install dir not found. 可用 --install-dir 或环境变量 ANTIGRAVITY_INSTALL_DIR 指定。');
-  return installDir;
+  const layout = findAntigravityLayout();
+  if (!layout) throw new Error('Antigravity install dir not found. 可用 --install-dir 或环境变量 ANTIGRAVITY_INSTALL_DIR 指定。');
+  return layout;
 }
 
-function resourcesDir() {
-  return path.join(resolveInstallDir(), 'resources');
+function codesignBundle(appBundle) {
+  if (process.platform !== 'darwin' || !appBundle) return;
+  try {
+    child_process.execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', appBundle], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    const detail = (e.stderr && e.stderr.toString()) || e.message;
+    throw new Error('codesign failed: ' + detail);
+  }
 }
 
 function readAsarVersion(asarPath) {
@@ -293,8 +368,8 @@ function refreshBackup(asarPath, ownBak) {
 }
 
 function check() {
-  const resources = resourcesDir();
-  const asarPath = path.join(resources, 'app.asar');
+  const layout = resolveLayout();
+  const asarPath = path.join(layout.resourcesDir, 'app.asar');
   const tmpPre = path.join(os.tmpdir(), 'agy-check-preload.js');
   const tmpMain = path.join(os.tmpdir(), 'agy-check-main.js');
   extractInnerFile(asarPath, 'dist/preload.js', tmpPre);
@@ -306,7 +381,7 @@ function check() {
   const hud = hasBlock(preload, HUD_START);
   const boot = hasBlock(mainJs, BOOT_START);
   const version = readAsarVersion(asarPath);
-  console.log('installDir', path.dirname(resources));
+  console.log('installDir', layout.installDir);
   if (version) console.log('version', version);
   console.log('hud', hud ? 'present' : 'missing');
   console.log('bootstrap', boot ? 'present' : 'missing');
@@ -314,8 +389,9 @@ function check() {
 }
 
 function install() {
-  const installDir = resolveInstallDir();
-  const resources = path.join(installDir, 'resources');
+  const layout = resolveLayout();
+  const installDir = layout.installDir;
+  const resources = layout.resourcesDir;
   const asarPath = path.join(resources, 'app.asar');
   const ownBak = path.join(resources, 'app.asar.agy-context.bak');
   const hudPath = path.join(__dirname, 'bootstrap', 'hud.js');
@@ -323,7 +399,7 @@ function install() {
   const nodePath = findNode();
   if (!fs.existsSync(hudPath)) throw new Error('missing hud.js');
   if (!fs.existsSync(monitorScript)) throw new Error('missing src/main.js');
-  if (!nodePath) throw new Error('node.exe not found');
+  if (!nodePath) throw new Error(process.platform === 'darwin' ? 'node not found' : 'node.exe not found');
 
   const version = readAsarVersion(asarPath);
   console.log('[探测] Antigravity', installDir, version ? `(${version})` : '');
@@ -356,16 +432,18 @@ function install() {
   if (!asarHasHud(asarPath)) {
     throw new Error('asar wrote but HUD marker missing; inject aborted');
   }
+  codesignBundle(layout.appBundle);
   console.log('[√] 已注入 HUD 到 dist/preload.js');
   console.log('[√] 已注入 bootstrap 到 dist/main.js');
   startMonitor(nodePath, monitorScript);
   console.log('[监控]', nodePath, monitorScript, '--watch');
-  launchAntigravity(installDir);
+  launchAntigravity(layout);
 }
 
 function uninstall() {
-  const installDir = resolveInstallDir();
-  const resources = path.join(installDir, 'resources');
+  const layout = resolveLayout();
+  const installDir = layout.installDir;
+  const resources = layout.resourcesDir;
   const asarPath = path.join(resources, 'app.asar');
   console.log('[探测] Antigravity', installDir);
   const wasRunning = isAntigravityRunningSync();
@@ -378,8 +456,9 @@ function uninstall() {
   fs.writeFileSync(preloadPath, stripBlock(fs.readFileSync(preloadPath, 'utf8'), HUD_START, HUD_END), 'utf8');
   fs.writeFileSync(mainPath, stripBlock(fs.readFileSync(mainPath, 'utf8'), BOOT_START, BOOT_END), 'utf8');
   extractPack(asarPath, tempDir, true);
+  codesignBundle(layout.appBundle);
   console.log('[√] 已移除圆环与启动器；汉化包未改动');
-  if (wasRunning) launchAntigravity(installDir);
+  if (wasRunning) launchAntigravity(layout);
 }
 
 function main() {
@@ -411,4 +490,5 @@ module.exports = {
   hasBlock,
   shouldRefreshBackup,
   findNode,
+  bootstrapSource,
 };

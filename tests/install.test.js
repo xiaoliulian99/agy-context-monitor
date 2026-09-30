@@ -6,6 +6,7 @@ const {
   stripBlock,
   hasBlock,
   shouldRefreshBackup,
+  bootstrapSource,
 } = require('../injector/install');
 
 let failed = 0;
@@ -42,6 +43,15 @@ assert(hasBlock(boot, BOOT_START), 'hasBlock finds bootstrap');
 
 assert(shouldRefreshBackup(false) === true, 'refresh bak after official update (no HUD)');
 assert(shouldRefreshBackup(true) === false, 'keep bak when HUD already present');
+
+const bootSrc = bootstrapSource('/usr/local/bin/node', '/repo/src/main.js');
+assert(bootSrc.includes("Library', 'Application Support', 'agy-context-monitor'"), 'bootstrap has mac data dir');
+assert(bootSrc.includes('LOCALAPPDATA'), 'bootstrap keeps windows data dir');
+assert(bootSrc.includes('process.kill'), 'bootstrap checks pid without tasklist');
+assert(!bootSrc.includes('tasklist'), 'bootstrap no longer calls tasklist');
+const hudSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'injector', 'bootstrap', 'hud.js'), 'utf8');
+assert(hudSrc.includes("Library', 'Application Support', 'agy-context-monitor'"), 'hud has mac data dir');
+assert(hudSrc.includes('LOCALAPPDATA'), 'hud keeps windows data dir');
 
 if (failed) process.exit(1);
 console.log('all install tests passed');

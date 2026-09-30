@@ -2,9 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-function statusDir() {
-  const root = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+function resolveMonitorDataDir(platform, env, homedir) {
+  const home = homedir || '';
+  if (platform === 'darwin') {
+    const root = (env && env.HOME) || home;
+    return path.join(root, 'Library', 'Application Support', 'agy-context-monitor');
+  }
+  const root = (env && env.LOCALAPPDATA) || path.join(home, 'AppData', 'Local');
   return path.join(root, 'agy-context-monitor');
+}
+
+function statusDir() {
+  return resolveMonitorDataDir(process.platform, process.env, os.homedir());
 }
 
 function statusPath() {
@@ -119,6 +128,7 @@ function writeStatus(snap) {
 }
 
 module.exports = {
+  resolveMonitorDataDir,
   statusDir,
   statusPath,
   activeCascadePath,

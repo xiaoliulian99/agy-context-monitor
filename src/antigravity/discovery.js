@@ -2,6 +2,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 const https = require('https');
 const { rpcCall } = require('./rpc');
@@ -126,7 +127,122 @@ function netstatLineMatchesPid(line, pid) {
   return cols[2] === '0.0.0.0:0' || cols[2] === '[::]:0' || cols[2] === '*:*';
 }
 
+function isMacLsCommandLine(commandLine) {
+  const low = String(commandLine || '').toLowerCase();
+  return low.includes('language_server') && low.includes('antigravity');
+}
+
+function parseMacPsLines(text) {
+  const out = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(\d+)\s+(\S[\s\S]*)$/);
+    if (!match) continue;
+    const pid = parseInt(match[1], 10);
+    const commandLine = match[2];
+    if (!(pid > 0) || !isMacLsCommandLine(commandLine)) continue;
+    out.push({ pid, csrfToken: extractCsrfToken(commandLine), commandLine });
+  }
+  return out;
+}
+
+function parseLsofListenPorts(text) {
+  const ports = [];
+  for (const line of String(text || '').split(/\n/)) {
+    const match = line.match(/\bTCP\s+(\S+)\s+\(LISTEN\)/);
+    if (!match) continue;
+    const endpoint = match[1].match(/^(.*):(\d+)$/);
+    if (!endpoint || !isLoopbackReachableHost(endpoint[1])) continue;
+    const port = parseInt(endpoint[2], 10);
+    if (port > 0 && port <= 65535 && !ports.includes(port)) ports.push(port);
+  }
+  return ports;
+}
+
+function installCandidateDirs(platform, env, homedir) {
+  const dirs = [];
+  const add = (dir) => { if (dir) dirs.push(dir); };
+  add(env && env.ANTIGRAVITY_INSTALL_DIR);
+  add(env && env.ANTIGRAVITY_HOME);
+  if (platform === 'darwin') {
+    add('/Applications/Antigravity.app');
+    add('/Applications/Antigravity IDE.app');
+    add(path.join(homedir || '', 'Applications', 'Antigravity.app'));
+    add(path.join(homedir || '', 'Applications', 'Antigravity IDE.app'));
+    return dirs;
+  }
+  if (env && env.LOCALAPPDATA) add(path.join(env.LOCALAPPDATA, 'Programs', 'antigravity'));
+  add('C:\\Program Files\\Antigravity');
+  return dirs;
+}
+
+function inspectAntigravityPath(dir) {
+  if (!dir) return null;
+  let resolved;
+  try { resolved = path.resolve(dir); } catch (_) { return null; }
+  const macExe = path.join(resolved, 'Contents', 'MacOS', 'Antigravity');
+  const macAsar = path.join(resolved, 'Contents', 'Resources', 'app.asar');
+  if (fs.existsSync(macExe) && fs.existsSync(macAsar)) {
+    return {
+      installDir: resolved,
+      resourcesDir: path.join(resolved, 'Contents', 'Resources'),
+      executable: macExe,
+      appBundle: resolved,
+    };
+  }
+  const contentsExe = path.join(resolved, 'MacOS', 'Antigravity');
+  const contentsAsar = path.join(resolved, 'Resources', 'app.asar');
+  if (fs.existsSync(contentsExe) && fs.existsSync(contentsAsar)) {
+    const appBundle = path.dirname(resolved);
+    return {
+      installDir: appBundle,
+      resourcesDir: path.join(resolved, 'Resources'),
+      executable: contentsExe,
+      appBundle,
+    };
+  }
+  const winExe = path.join(resolved, 'Antigravity.exe');
+  const winAsar = path.join(resolved, 'resources', 'app.asar');
+  if (fs.existsSync(winExe) && fs.existsSync(winAsar)) {
+    return {
+      installDir: resolved,
+      resourcesDir: path.join(resolved, 'resources'),
+      executable: winExe,
+      appBundle: null,
+    };
+  }
+  return null;
+}
+
+function findAntigravityLayout() {
+  const seen = new Set();
+  const dirs = installCandidateDirs(process.platform, process.env, os.homedir());
+  for (const dir of dirs) {
+    const resolved = path.resolve(dir);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const layout = inspectAntigravityPath(resolved);
+    if (layout) return layout;
+  }
+  return null;
+}
+
+async function listMacLanguageServerProcesses() {
+  try {
+    const result = await execFileAsync('/bin/ps', ['-ax', '-o', 'pid=,command='], {
+      encoding: 'utf-8',
+      timeout: 10000,
+    });
+    return parseMacPsLines(result.stdout);
+  } catch (_) {
+    return [];
+  }
+}
+
 async function listLanguageServerProcesses() {
+  if (process.platform === 'darwin') return listMacLanguageServerProcesses();
   const psExe = winExe('powershell');
   const result = await execFileAsync(psExe, [
     '-NoProfile', '-NoLogo', '-Command',
@@ -145,7 +261,19 @@ async function listLanguageServerProcesses() {
     return out;
 }
 
+async function findMacListeningPorts(pid) {
+  try {
+    const result = await execFileAsync('/usr/sbin/lsof', [
+      '-nP', '-iTCP', '-sTCP:LISTEN', '-p', String(pid),
+    ], { encoding: 'utf-8', timeout: 5000 });
+    return parseLsofListenPorts(result.stdout);
+  } catch (_) {
+    return [];
+  }
+}
+
 async function findListeningPorts(pid) {
+  if (process.platform === 'darwin') return findMacListeningPorts(pid);
   const netstatExe = winExe('netstat');
   const result = await execFileAsync(netstatExe, ['-ano'], {
     encoding: 'utf-8',
@@ -178,31 +306,22 @@ async function probePort(port, csrfToken, useTls) {
 }
 
 function findAntigravityInstallDir() {
-  const candidates = [];
-  const seen = new Set();
-  const add = (dir) => {
-    if (!dir) return;
-    const resolved = path.resolve(dir);
-    const key = resolved.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    candidates.push(resolved);
-  };
-  add(process.env.ANTIGRAVITY_INSTALL_DIR);
-  add(process.env.ANTIGRAVITY_HOME);
-  const local = process.env.LOCALAPPDATA;
-  if (local) add(path.join(local, 'Programs', 'antigravity'));
-  add('C:\\Program Files\\Antigravity');
-  for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, 'Antigravity.exe'))
-      && fs.existsSync(path.join(dir, 'resources', 'app.asar'))) {
-      return dir;
-    }
-  }
-  return null;
+  const layout = findAntigravityLayout();
+  return layout ? layout.installDir : null;
 }
 
 async function isAntigravityRunning() {
+  if (process.platform === 'darwin') {
+    try {
+      await execFileAsync('/usr/bin/pgrep', ['-x', 'Antigravity'], {
+        encoding: 'utf-8',
+        timeout: 3000,
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
   try {
     const result = await execFileAsync(winExe('tasklist'), [
       '/fi', 'imagename eq Antigravity.exe', '/nh',
@@ -241,10 +360,16 @@ async function discoverLanguageServer() {
 
 module.exports = {
   findAntigravityInstallDir,
+  findAntigravityLayout,
+  inspectAntigravityPath,
+  installCandidateDirs,
   isAntigravityRunning,
   discoverLanguageServer,
   extractCsrfToken,
   extractWindowsPid,
   isLsCommandLine,
+  isMacLsCommandLine,
+  parseMacPsLines,
+  parseLsofListenPorts,
   parseAppConfig,
 };
