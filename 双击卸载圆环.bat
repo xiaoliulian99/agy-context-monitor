@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal EnableExtensions
 cd /d "%~dp0"
 set "LOG=%~dp0inject.log"
@@ -25,10 +26,12 @@ echo.
 echo Removing context ring. Antigravity will be closed.
 echo Log: "%LOG%"
 echo.
-echo ==== %DATE% %TIME% uninstall ====>>"%LOG%"
-"%NODE_BIN%" "%~dp0injector\install.js" --uninstall %* >>"%LOG%" 2>&1
+set "RUN=%TEMP%\agy-context-uninstall-run.log"
+echo ==== %DATE% %TIME% uninstall ====>"%RUN%"
+"%NODE_BIN%" "%~dp0injector\install.js" --uninstall %* >>"%RUN%" 2>&1
 set "ERR=%ERRORLEVEL%"
-type "%LOG%"
+type "%RUN%"
+type "%RUN%" >>"%LOG%"
 if not "%ERR%"=="0" (
   echo.
   echo [X] Uninstall failed. See inject.log

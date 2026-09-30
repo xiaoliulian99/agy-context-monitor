@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal EnableExtensions
 cd /d "%~dp0"
 set "LOG=%~dp0inject.log"
@@ -25,11 +26,13 @@ echo.
 echo Injecting context ring. Antigravity will be closed.
 echo Log: "%LOG%"
 echo.
-echo ==== %DATE% %TIME% inject ====>>"%LOG%"
-echo NODE_BIN=%NODE_BIN%>>"%LOG%"
-"%NODE_BIN%" "%~dp0injector\install.js" %* >>"%LOG%" 2>&1
+set "RUN=%TEMP%\agy-context-inject-run.log"
+echo ==== %DATE% %TIME% inject ====>"%RUN%"
+echo NODE_BIN=%NODE_BIN%>>"%RUN%"
+"%NODE_BIN%" "%~dp0injector\install.js" %* >>"%RUN%" 2>&1
 set "ERR=%ERRORLEVEL%"
-type "%LOG%"
+type "%RUN%"
+type "%RUN%" >>"%LOG%"
 if not "%ERR%"=="0" (
   echo.
   echo [X] Inject failed. See inject.log
