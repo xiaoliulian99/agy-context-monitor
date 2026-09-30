@@ -1,12 +1,12 @@
 # Antigravity Context Monitor
 
-给 **Antigravity Desktop 2.15.0（Windows）** 用的轻量 Context 圆环。
+给 **Antigravity Desktop 2.18.1（Windows）** 用的轻量 Context 圆环。
 
 装好后，正常打开 Antigravity，输入框麦克风**左边**会出现一个很细的圆环。鼠标悬停就能看到当前会话的 Context 占用，例如「45% 已用（剩余 55%）」。
 
 你**不用**选端口、选 Session，也**不用**每次手动开监控。计算跑在本机一个独立的 Node 进程里，Antigravity 里只多一小块 HUD。
 
-> 目前只支持 Windows。macOS / Linux 请先不要试。
+> Windows 已在本机 Antigravity 2.18.1 上使用。macOS 的路径、进程发现和双击脚本已经接上，但 **签名和真机启动还没有在 Mac 上验证**。Linux 仍不要试。
 
 仓库地址：https://github.com/xiaoliulian99/agy-context-monitor
 
@@ -58,7 +58,7 @@
 请逐项确认：
 
 1. **Windows 电脑**（Win10 / Win11 都可以）
-2. **已经安装** Antigravity Desktop 2.15.0
+2. **已经安装** Antigravity Desktop 2.18.1
 3. **已经安装** Node.js LTS，并且能在终端里用
 4. **能上网访问 npm**（第一次注入会执行 `npx @electron/asar`，用来解包 / 打包 `app.asar`）
 5. 建议安装 **Git**（没有 Git 也可以下载 ZIP，见第 4 节）
@@ -171,7 +171,7 @@ taskkill /f /im Antigravity.exe /t
 
 ## 6. 执行注入（真正安装圆环）
 
-确认当前目录已经是仓库根目录（能看到 `injector` 文件夹），然后**双击 `双击注入圆环.bat`**（和汉化包一样，官方更新后再双击一次即可）。窗口会停住直到你按键；失败时看同目录的 `inject.log`。
+确认当前目录已经是仓库根目录（能看到 `injector` 文件夹），然后**双击 `双击注入圆环.bat`**（和汉化包一样，官方更新后再双击一次即可）。窗口按 UTF-8 只显示这一次，并停住直到你按键；完整输出追加到同目录的 `inject.log`。失败时看这个日志的最后一次。2026-09-30 之前的旧日志是 GBK 和 UTF-8 混在一起的，早期中文用编辑器打开可能仍是乱的。
 
 也可以在命令行运行：
 
@@ -192,7 +192,7 @@ node injector/install.js
 成功时终端大致会看到：
 
 ```
-[探测] Antigravity C:\Users\<你>\AppData\Local\Programs\antigravity (2.15.0)
+[探测] Antigravity C:\Users\<你>\AppData\Local\Programs\antigravity (2.18.1)
 [1] 正在关闭 Antigravity 以解锁 app.asar...
 [备份] 已创建 app.asar.agy-context.bak
 [√] 已注入 HUD 到 dist/preload.js
@@ -212,7 +212,7 @@ node injector/install.js --check
 
 ```
 installDir C:\Users\<你>\AppData\Local\Programs\antigravity
-version 2.15.0
+version 2.18.1
 hud present
 bootstrap present
 ```
@@ -475,10 +475,31 @@ node src/main.js --watch
 
 ---
 
-## 14. 安全与备份
+## 14. macOS
+
+在 Mac 上用仓库根目录的 `双击注入圆环.command` / `双击卸载圆环.command`。终端里也可以：
+
+```bash
+chmod +x 双击注入圆环.command 双击卸载圆环.command
+./双击注入圆环.command
+```
+
+默认找这些位置，目录里要有 `Contents/Resources/app.asar` 和 `Contents/MacOS/Antigravity`：
+
+- `/Applications/Antigravity.app`
+- `/Applications/Antigravity IDE.app`
+- `~/Applications/` 下同名的两个包
+
+`--install-dir` 可以指到 `.app`，也可以指到里面的 `Contents`。状态文件在 `~/Library/Application Support/agy-context-monitor/status.json`。
+
+写回 `app.asar` 之后会对整个 `.app` 做 ad-hoc 重签（`codesign --force --sign -`）。签失败就算注入失败。这一步以及重签后能否从启动台打开，**还没有在 Mac 上跑过**。官方更新会换掉整个包，更新后再双击一次。
+
+Node 会按绝对路径写进启动器，依次试当前终端的 `node`、`/opt/homebrew/bin/node`、`/usr/local/bin/node`。不要用 `sudo`。
+
+## 15. 安全与备份
 
 - 注入会修改 Antigravity 的 `resources\app.asar`。这是本工具能在输入框里画圆环的原因。
 - 第一次注入会留下独立备份：`resources\app.asar.agy-context.bak`。
 - 监控只连接本机 Language Server（`127.0.0.1`），不往外发你的对话内容。
 - 卸载命令只移除本工具写入的两段代码，不恢复整个 asar，因此汉化会保留。
-- 这是非官方配套小工具，Antigravity 大版本更新后可能要重新注入；当前针对 **Desktop 2.15.0**。
+- 这是非官方配套小工具，Antigravity 大版本更新后可能要重新注入；当前针对 **Desktop 2.18.1**。
