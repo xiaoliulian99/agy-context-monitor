@@ -48,6 +48,112 @@ function shouldRefreshBackup(currentHasHud) {
   return !currentHasHud;
 }
 
+const REVEAL_TOTAL_BUDGET_MS = 700;
+const REVEAL_MAX_PER_CHAR_MS = 20;
+
+const INSTALL_INTRO_LINES = [
+  '即将注入 Context 圆环到 Antigravity。',
+  '安装过程中 Antigravity 会被关闭，完成后会自动重新打开，请先保存未完成的工作。',
+  '按 Enter 确认安装；直接关闭窗口或按 Ctrl+C 取消。',
+];
+
+const UNINSTALL_INTRO_LINES = [
+  '即将从 Antigravity 移除 Context 圆环。',
+  '卸载过程中 Antigravity 会被关闭，请先保存未完成的工作。',
+  '按 Enter 确认卸载；直接关闭窗口或按 Ctrl+C 取消。',
+];
+
+function shouldPrompt({ check = false, yes = false, stdinTTY = false, stdoutTTY = false } = {}) {
+  return Boolean(stdinTTY && stdoutTTY && !check && !yes);
+}
+
+function shouldReveal({ check = false, yes = false, stdinTTY = false, stdoutTTY = false } = {}) {
+  return Boolean(stdinTTY && stdoutTTY && !check && !yes);
+}
+
+function perCharDelayMs(line) {
+  const len = [...String(line)].length;
+  if (len <= 0) return 0;
+  return Math.max(1, Math.min(REVEAL_MAX_PER_CHAR_MS, Math.floor(REVEAL_TOTAL_BUDGET_MS / len)));
+}
+
+function defaultWrite(chunk) {
+  try { process.stdout.write(chunk); } catch (_) { /* ignore */ }
+}
+
+function busySleepSync(ms) {
+  if (!(ms > 0)) return;
+  const t = Date.now();
+  while (Date.now() - t < ms) { /* wait */ }
+}
+
+function revealLine(line, opts = {}) {
+  const write = opts.write || defaultWrite;
+  const sleep = opts.sleep || busySleepSync;
+  const text = String(line);
+  const perChar = opts.perCharMs != null ? opts.perCharMs : perCharDelayMs(text);
+  for (const ch of text) {
+    write(ch);
+    if (perChar > 0) sleep(perChar);
+  }
+  write('\n');
+}
+
+function emitLine(line, opts = {}) {
+  if (!opts.reveal) {
+    (opts.write || defaultWrite)(String(line) + '\n');
+    return;
+  }
+  revealLine(line, opts);
+}
+
+function chunkHasEnter(buf, length) {
+  const n = length != null ? length : buf.length;
+  return buf.subarray(0, n).indexOf(10) !== -1 || buf.subarray(0, n).indexOf(13) !== -1;
+}
+
+function waitForEnterSync(readChunk) {
+  const buf = Buffer.alloc(1024);
+  const read = readChunk || ((target) => fs.readSync(0, target, 0, target.length, null));
+  for (;;) {
+    let n;
+    try {
+      n = read(buf);
+    } catch (e) {
+      throw new Error('已取消：确认输入读取失败，未做任何改动' + (e && e.message ? `（${e.message}）` : ''));
+    }
+    if (!(n > 0)) {
+      throw new Error('已取消：未收到 Enter 确认，未做任何改动');
+    }
+    if (chunkHasEnter(buf, n)) return;
+  }
+}
+
+function resolveLogFile() {
+  return path.resolve(__dirname, '..', 'inject.log');
+}
+
+function appendLogLine(logFile, line) {
+  try { fs.appendFileSync(logFile, String(line) + '\n', 'utf8'); } catch (_) { /* ignore */ }
+}
+
+function appendLogHeader(logFile, mode) {
+  try { fs.appendFileSync(logFile, `==== ${new Date().toLocaleString()} ${mode} ====\n`, 'utf8'); } catch (_) { /* ignore */ }
+}
+
+let activeSlow = null;
+let activeNow = null;
+
+function reportSlow(line) {
+  if (activeSlow) { activeSlow(line); return; }
+  console.log(line);
+}
+
+function reportNow(line) {
+  if (activeNow) { activeNow(line); return; }
+  console.log(line);
+}
+
 function isAntigravityRunningSync() {
   if (process.platform === 'darwin') {
     try {
@@ -130,28 +236,28 @@ function launchAntigravity(layout) {
   if (process.platform === 'darwin') {
     const app = layout && layout.appBundle;
     if (!app || !fs.existsSync(app)) {
-      console.log('[启动] 未找到 Antigravity.app，请手动打开。');
+      reportSlow('[启动] 未找到 Antigravity.app，请手动打开。');
       return;
     }
     try {
       child_process.spawn('/usr/bin/open', ['-a', app], { detached: true, stdio: 'ignore' }).unref();
-      console.log('[启动] 已重新打开 Antigravity。');
+      reportSlow('[启动] 已重新打开 Antigravity。');
     } catch (e) {
-      console.log('[启动] 自动打开失败，请手动打开。', e.message);
+      reportSlow('[启动] 自动打开失败，请手动打开。 ' + e.message);
     }
     return;
   }
   const installDir = layout && layout.installDir;
   const exe = installDir ? path.join(installDir, 'Antigravity.exe') : '';
   if (!exe || !fs.existsSync(exe)) {
-    console.log('[启动] 未找到 Antigravity.exe，请手动打开。');
+    reportSlow('[启动] 未找到 Antigravity.exe，请手动打开。');
     return;
   }
   try {
     child_process.spawn(exe, [], { detached: true, stdio: 'ignore' }).unref();
-    console.log('[启动] 已重新打开 Antigravity。');
+    reportSlow('[启动] 已重新打开 Antigravity。');
   } catch (e) {
-    console.log('[启动] 自动打开失败，请手动打开。', e.message);
+    reportSlow('[启动] 自动打开失败，请手动打开。 ' + e.message);
   }
 }
 
@@ -270,7 +376,7 @@ function copyAsarUnlocked(src, dest) {
       return;
     } catch (e) {
       lastErr = e;
-      console.log('[警告] app.asar 被占用，重试关闭 Antigravity...', e.message);
+      reportNow('[警告] app.asar 被占用，重试关闭 Antigravity... ' + e.message);
       closeAntigravity();
     }
   }
@@ -358,11 +464,11 @@ function refreshBackup(asarPath, ownBak) {
   const currentHasHud = asarHasHud(asarPath);
   const bakExists = fs.existsSync(ownBak);
   if (!shouldRefreshBackup(currentHasHud)) {
-    console.log('[备份] 当前包已含圆环，保留既有 app.asar.agy-context.bak');
+    reportSlow('[备份] 当前包已含圆环，保留既有 app.asar.agy-context.bak');
     return;
   }
   fs.copyFileSync(asarPath, ownBak);
-  console.log(bakExists
+  reportSlow(bakExists
     ? '[备份] 官方包已更新，已刷新 app.asar.agy-context.bak'
     : '[备份] 已创建 app.asar.agy-context.bak');
 }
@@ -388,91 +494,144 @@ function check() {
   return hud && boot;
 }
 
-function install() {
-  const layout = resolveLayout();
-  const installDir = layout.installDir;
-  const resources = layout.resourcesDir;
-  const asarPath = path.join(resources, 'app.asar');
-  const ownBak = path.join(resources, 'app.asar.agy-context.bak');
-  const hudPath = path.join(__dirname, 'bootstrap', 'hud.js');
-  const monitorScript = path.resolve(__dirname, '..', 'src', 'main.js');
-  const nodePath = findNode();
-  if (!fs.existsSync(hudPath)) throw new Error('missing hud.js');
-  if (!fs.existsSync(monitorScript)) throw new Error('missing src/main.js');
-  if (!nodePath) throw new Error(process.platform === 'darwin' ? 'node not found' : 'node.exe not found');
-
-  const version = readAsarVersion(asarPath);
-  console.log('[探测] Antigravity', installDir, version ? `(${version})` : '');
-  const wasRunning = isAntigravityRunningSync();
-  console.log('[1] 正在关闭 Antigravity 以解锁 app.asar...');
-  closeAntigravity();
-
-  refreshBackup(asarPath, ownBak);
-
-  const tempDir = path.join(os.tmpdir(), 'agy-context-asar');
-  console.log('[解包] 正在提取 app.asar...');
-  extractPack(asarPath, tempDir, false);
-
-  const preloadPath = path.join(tempDir, 'dist', 'preload.js');
-  const mainPath = path.join(tempDir, 'dist', 'main.js');
-  if (!fs.existsSync(preloadPath) || !fs.existsSync(mainPath)) {
-    throw new Error('dist/preload.js or dist/main.js missing inside asar');
-  }
-
-  let preload = stripBlock(fs.readFileSync(preloadPath, 'utf8'), HUD_START, HUD_END);
-  preload = preload.trimEnd() + '\n' + fs.readFileSync(hudPath, 'utf8') + '\n';
-  fs.writeFileSync(preloadPath, preload, 'utf8');
-
-  let mainJs = stripBlock(fs.readFileSync(mainPath, 'utf8'), BOOT_START, BOOT_END);
-  mainJs = mainJs.trimEnd() + '\n' + bootstrapSource(nodePath, monitorScript);
-  fs.writeFileSync(mainPath, mainJs, 'utf8');
-
-  console.log('[打包] 正在写回 app.asar...');
-  extractPack(asarPath, tempDir, true);
-  if (!asarHasHud(asarPath)) {
-    throw new Error('asar wrote but HUD marker missing; inject aborted');
-  }
-  codesignBundle(layout.appBundle);
-  console.log('[√] 已注入 HUD 到 dist/preload.js');
-  console.log('[√] 已注入 bootstrap 到 dist/main.js');
-  startMonitor(nodePath, monitorScript);
-  console.log('[监控]', nodePath, monitorScript, '--watch');
-  launchAntigravity(layout);
-}
-
-function uninstall() {
-  const layout = resolveLayout();
-  const installDir = layout.installDir;
-  const resources = layout.resourcesDir;
-  const asarPath = path.join(resources, 'app.asar');
-  console.log('[探测] Antigravity', installDir);
-  const wasRunning = isAntigravityRunningSync();
-  console.log('[1] 正在关闭 Antigravity 以解锁 app.asar...');
-  closeAntigravity();
-  const tempDir = path.join(os.tmpdir(), 'agy-context-asar');
-  extractPack(asarPath, tempDir, false);
-  const preloadPath = path.join(tempDir, 'dist', 'preload.js');
-  const mainPath = path.join(tempDir, 'dist', 'main.js');
-  fs.writeFileSync(preloadPath, stripBlock(fs.readFileSync(preloadPath, 'utf8'), HUD_START, HUD_END), 'utf8');
-  fs.writeFileSync(mainPath, stripBlock(fs.readFileSync(mainPath, 'utf8'), BOOT_START, BOOT_END), 'utf8');
-  extractPack(asarPath, tempDir, true);
-  codesignBundle(layout.appBundle);
-  console.log('[√] 已移除圆环与启动器；汉化包未改动');
-  if (wasRunning) launchAntigravity(layout);
-}
-
-function main() {
+function install(opts = {}) {
+  const argv = opts.argv || process.argv;
+  const stdinTTY = opts.stdinTTY != null ? opts.stdinTTY : Boolean(process.stdin && process.stdin.isTTY);
+  const stdoutTTY = opts.stdoutTTY != null ? opts.stdoutTTY : Boolean(process.stdout && process.stdout.isTTY);
+  const flag = { check: argv.includes('--check'), yes: argv.includes('--yes'), stdinTTY, stdoutTTY };
+  const prompt = opts.prompt != null ? opts.prompt : shouldPrompt(flag);
+  const reveal = opts.reveal != null ? opts.reveal : shouldReveal(flag);
+  const write = opts.write || defaultWrite;
+  const sleep = opts.sleep || busySleepSync;
+  const waitForEnter = opts.waitForEnter || waitForEnterSync;
+  const logFile = opts.logFile || resolveLogFile();
+  const saySlow = (line) => { emitLine(line, { reveal, write, sleep }); appendLogLine(logFile, line); };
+  const sayNow = (line) => { emitLine(line, { reveal: false, write }); appendLogLine(logFile, line); };
+  activeSlow = saySlow;
+  activeNow = sayNow;
   try {
-    if (argFlag('--check')) {
+    appendLogHeader(logFile, 'inject');
+    for (const line of INSTALL_INTRO_LINES) saySlow(line);
+    if (prompt) waitForEnter();
+
+    const layout = resolveLayout();
+    const installDir = layout.installDir;
+    const resources = layout.resourcesDir;
+    const asarPath = path.join(resources, 'app.asar');
+    const ownBak = path.join(resources, 'app.asar.agy-context.bak');
+    const hudPath = path.join(__dirname, 'bootstrap', 'hud.js');
+    const monitorScript = path.resolve(__dirname, '..', 'src', 'main.js');
+    const nodePath = findNode();
+    if (!fs.existsSync(hudPath)) throw new Error('missing hud.js');
+    if (!fs.existsSync(monitorScript)) throw new Error('missing src/main.js');
+    if (!nodePath) throw new Error(process.platform === 'darwin' ? 'node not found' : 'node.exe not found');
+
+    const version = readAsarVersion(asarPath);
+    saySlow('[探测] Antigravity ' + installDir + (version ? ` (${version})` : ''));
+    saySlow('[1] 正在关闭 Antigravity 以解锁 app.asar...');
+    closeAntigravity();
+
+    refreshBackup(asarPath, ownBak);
+
+    const tempDir = path.join(os.tmpdir(), 'agy-context-asar');
+    saySlow('[解包] 正在提取 app.asar...');
+    extractPack(asarPath, tempDir, false);
+
+    const preloadPath = path.join(tempDir, 'dist', 'preload.js');
+    const mainPath = path.join(tempDir, 'dist', 'main.js');
+    if (!fs.existsSync(preloadPath) || !fs.existsSync(mainPath)) {
+      throw new Error('dist/preload.js or dist/main.js missing inside asar');
+    }
+
+    let preload = stripBlock(fs.readFileSync(preloadPath, 'utf8'), HUD_START, HUD_END);
+    preload = preload.trimEnd() + '\n' + fs.readFileSync(hudPath, 'utf8') + '\n';
+    fs.writeFileSync(preloadPath, preload, 'utf8');
+
+    let mainJs = stripBlock(fs.readFileSync(mainPath, 'utf8'), BOOT_START, BOOT_END);
+    mainJs = mainJs.trimEnd() + '\n' + bootstrapSource(nodePath, monitorScript);
+    fs.writeFileSync(mainPath, mainJs, 'utf8');
+
+    saySlow('[打包] 正在写回 app.asar...');
+    extractPack(asarPath, tempDir, true);
+    if (!asarHasHud(asarPath)) {
+      throw new Error('asar wrote but HUD marker missing; inject aborted');
+    }
+    codesignBundle(layout.appBundle);
+    saySlow('[√] 已注入 HUD 到 dist/preload.js');
+    saySlow('[√] 已注入 bootstrap 到 dist/main.js');
+    startMonitor(nodePath, monitorScript);
+    saySlow('[监控] ' + nodePath + ' ' + monitorScript + ' --watch');
+    launchAntigravity(layout);
+  } finally {
+    activeSlow = null;
+    activeNow = null;
+  }
+}
+
+function uninstall(opts = {}) {
+  const argv = opts.argv || process.argv;
+  const stdinTTY = opts.stdinTTY != null ? opts.stdinTTY : Boolean(process.stdin && process.stdin.isTTY);
+  const stdoutTTY = opts.stdoutTTY != null ? opts.stdoutTTY : Boolean(process.stdout && process.stdout.isTTY);
+  const flag = { check: argv.includes('--check'), yes: argv.includes('--yes'), stdinTTY, stdoutTTY };
+  const prompt = opts.prompt != null ? opts.prompt : shouldPrompt(flag);
+  const reveal = opts.reveal != null ? opts.reveal : shouldReveal(flag);
+  const write = opts.write || defaultWrite;
+  const sleep = opts.sleep || busySleepSync;
+  const waitForEnter = opts.waitForEnter || waitForEnterSync;
+  const logFile = opts.logFile || resolveLogFile();
+  const saySlow = (line) => { emitLine(line, { reveal, write, sleep }); appendLogLine(logFile, line); };
+  const sayNow = (line) => { emitLine(line, { reveal: false, write }); appendLogLine(logFile, line); };
+  activeSlow = saySlow;
+  activeNow = sayNow;
+  try {
+    appendLogHeader(logFile, 'uninstall');
+    for (const line of UNINSTALL_INTRO_LINES) saySlow(line);
+    if (prompt) waitForEnter();
+
+    const layout = resolveLayout();
+    const installDir = layout.installDir;
+    const resources = layout.resourcesDir;
+    const asarPath = path.join(resources, 'app.asar');
+    saySlow('[探测] Antigravity ' + installDir);
+    const wasRunning = isAntigravityRunningSync();
+    saySlow('[1] 正在关闭 Antigravity 以解锁 app.asar...');
+    closeAntigravity();
+    const tempDir = path.join(os.tmpdir(), 'agy-context-asar');
+    saySlow('[解包] 正在提取 app.asar...');
+    extractPack(asarPath, tempDir, false);
+    const preloadPath = path.join(tempDir, 'dist', 'preload.js');
+    const mainPath = path.join(tempDir, 'dist', 'main.js');
+    fs.writeFileSync(preloadPath, stripBlock(fs.readFileSync(preloadPath, 'utf8'), HUD_START, HUD_END), 'utf8');
+    fs.writeFileSync(mainPath, stripBlock(fs.readFileSync(mainPath, 'utf8'), BOOT_START, BOOT_END), 'utf8');
+    saySlow('[打包] 正在写回 app.asar...');
+    extractPack(asarPath, tempDir, true);
+    codesignBundle(layout.appBundle);
+    saySlow('[√] 已移除圆环与启动器；汉化包未改动');
+    if (wasRunning) launchAntigravity(layout);
+  } finally {
+    activeSlow = null;
+    activeNow = null;
+  }
+}
+
+function main(opts = {}) {
+  try {
+    const argv = opts.argv || process.argv;
+    if (argv.includes('--check')) {
       process.exit(check() ? 0 : 2);
     }
-    if (argFlag('--uninstall')) {
-      uninstall();
+    if (argv.includes('--uninstall')) {
+      uninstall(opts);
       return;
     }
-    install();
+    install(opts);
   } catch (err) {
-    console.error('[错误]', err.message);
+    const msg = '[错误] ' + (err && err.message ? err.message : String(err));
+    try { process.stderr.write(msg + '\n'); } catch (_) { console.error(msg); }
+    try {
+      const argv = (opts && opts.argv) || process.argv;
+      if (!argv.includes('--check')) appendLogLine((opts && opts.logFile) || resolveLogFile(), msg);
+    } catch (_) { /* ignore */ }
     process.exit(1);
   }
 }
@@ -491,4 +650,19 @@ module.exports = {
   shouldRefreshBackup,
   findNode,
   bootstrapSource,
+  INSTALL_INTRO_LINES,
+  UNINSTALL_INTRO_LINES,
+  REVEAL_TOTAL_BUDGET_MS,
+  REVEAL_MAX_PER_CHAR_MS,
+  shouldPrompt,
+  shouldReveal,
+  perCharDelayMs,
+  busySleepSync,
+  revealLine,
+  emitLine,
+  chunkHasEnter,
+  waitForEnterSync,
+  resolveLogFile,
+  appendLogLine,
+  appendLogHeader,
 };

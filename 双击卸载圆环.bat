@@ -22,16 +22,8 @@ if not defined NODE_BIN (
   exit /b 1
 )
 
-echo.
-echo Removing context ring. Antigravity will be closed.
-echo Log: "%LOG%"
-echo.
-set "RUN=%TEMP%\agy-context-uninstall-run.log"
-echo ==== %DATE% %TIME% uninstall ====>"%RUN%"
-"%NODE_BIN%" "%~dp0injector\install.js" --uninstall %* >>"%RUN%" 2>&1
+"%NODE_BIN%" "%~dp0injector\install.js" --uninstall %*
 set "ERR=%ERRORLEVEL%"
-type "%RUN%"
-type "%RUN%" >>"%LOG%"
 if not "%ERR%"=="0" (
   echo.
   echo [X] Uninstall failed. See inject.log
@@ -39,7 +31,4 @@ if not "%ERR%"=="0" (
   exit /b 1
 )
 
-echo.
-echo [OK] Ring removed. Localization was left intact.
-echo.
 pause

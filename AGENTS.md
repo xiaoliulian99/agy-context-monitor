@@ -24,6 +24,6 @@ Node.js。入口 `src/main.js`，注入 `injector/install.js`，HUD 在 `injecto
 - 不要删本仓库。bootstrap 写死了 `src/main.js` 的绝对路径。
 - 不要动 Antigravity 的 `resources\app.asar.bak`。圆环只用 `app.asar.agy-context.bak`。
 - 注入会结束 `Antigravity.exe`。只读确认用 `--check`。
-- 双击 bat 必须维持 `chcp 65001`，并且屏幕只回显这一次。中文在 `install.js`，bat 本身保持 ASCII。
+- 双击 bat 维持 `chcp 65001`（仅一次）且保持 ASCII；中文确认与逐条慢显在 `install.js` 里实时输出，不再把整份日志 `type` 回屏幕。
 - macOS 用 `双击注入圆环.command`。状态目录是 `~/Library/Application Support/agy-context-monitor`。写回 asar 后要 `codesign`；真机能否打开尚未验证。不要在 Windows 上改掉现有 bat。
 - `rpc.js` 的 `ideVersion` 仍是 `2.11.0`。不要顺手改成安装版本，除非同时改探针和测试。

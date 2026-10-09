@@ -19,26 +19,12 @@ if [ -z "$NODE_BIN" ]; then
   exit 1
 fi
 
-echo
-echo "Removing context ring. Antigravity will be closed."
-echo "Log: \"$LOG\""
-echo
-RUN="${TMPDIR:-/tmp}/agy-context-uninstall-run.log"
-{
-  echo "==== $(date '+%Y-%m-%d %H:%M:%S') uninstall ===="
-  echo "NODE_BIN=$NODE_BIN"
-  "$NODE_BIN" "$(pwd)/injector/install.js" --uninstall "$@"
-} >"$RUN" 2>&1
+"$NODE_BIN" "$(pwd)/injector/install.js" --uninstall "$@"
 ERR=$?
-cat "$RUN"
-cat "$RUN" >>"$LOG"
 if [ "$ERR" != "0" ]; then
   echo
   echo "[X] Uninstall failed. See inject.log"
   read -r -p "Press Enter to close..."
   exit 1
 fi
-echo
-echo "[OK] Ring removed. Localization was left intact."
-echo
 read -r -p "Press Enter to close..."

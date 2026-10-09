@@ -22,17 +22,8 @@ if not defined NODE_BIN (
   exit /b 1
 )
 
-echo.
-echo Injecting context ring. Antigravity will be closed.
-echo Log: "%LOG%"
-echo.
-set "RUN=%TEMP%\agy-context-inject-run.log"
-echo ==== %DATE% %TIME% inject ====>"%RUN%"
-echo NODE_BIN=%NODE_BIN%>>"%RUN%"
-"%NODE_BIN%" "%~dp0injector\install.js" %* >>"%RUN%" 2>&1
+"%NODE_BIN%" "%~dp0injector\install.js" %*
 set "ERR=%ERRORLEVEL%"
-type "%RUN%"
-type "%RUN%" >>"%LOG%"
 if not "%ERR%"=="0" (
   echo.
   echo [X] Inject failed. See inject.log
@@ -40,7 +31,4 @@ if not "%ERR%"=="0" (
   exit /b 1
 )
 
-echo.
-echo [OK] Injected. Open Antigravity; ring should appear left of the mic.
-echo.
 pause
